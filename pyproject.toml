@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "s1drops"
+version = "0.1.0"
+description = "Sentinel-1 backscatter cube + sharp-drop detection"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+
+[tool.setuptools]
+packages = ["s1drops", "s1drops.cube", "s1drops.analysis", "s1drops.app", "s1drops.tests"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

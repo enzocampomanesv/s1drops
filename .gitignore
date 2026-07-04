@@ -1,0 +1,54 @@
+# ============================================================
+#  IMPORTANT: the repo should contain SOURCE ONLY.
+#  Keep these OUTSIDE the project folder (referenced via env vars):
+#    - the virtualenv            (e.g. C:\s1env)
+#    - the LCZ GeoTIFF ~1.7 GB   (S1DROPS_LCZ_PATH)
+#    - the zarr cube cache       (S1DROPS_CACHE_DIR, e.g. C:\s1_cache)
+#  The rules below are a safety net in case any land in-tree.
+# ============================================================
+
+# ---- Virtual environments (incl. this project's) ----
+s1env/
+.venv/
+venv/
+env/
+ENV/
+pyvenv.cfg
+*.egg-link
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ---- Large geodata inputs / caches (NEVER commit) ----
+cache/
+*.zarr/
+*.zarr
+*.tif
+*.tiff
+lcz_cog.tif
+
+# ---- Secrets / local config ----
+.env
+.env.*
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Build artefacts ----
+*.zip
