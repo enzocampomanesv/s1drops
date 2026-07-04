@@ -27,10 +27,14 @@ DETECT_PAD = 2  # passes beyond the visible window for edge context
 # ---- series selection + detection -----------------------------------------
 
 def select_series(
-    cube: xr.Dataset, yi: int, xi: int, pol: str, direction: str = "both"
+    cube: xr.Dataset, yi: int, xi: int, pol: str, direction: str = "both", window: int = 0
 ) -> List[Series]:
-    """All (relative-orbit) series at a cell for one pol, filtered by direction."""
-    series = [s for s in extract_series(cube, yi, xi, pols=(pol,))]
+    """All (relative-orbit) series at a cell for one pol, filtered by direction.
+
+    window>=1 detects on the spatial-neighbourhood median instead of the single
+    pixel (speckle reduction for 10 m cubes).
+    """
+    series = [s for s in extract_series(cube, yi, xi, pols=(pol,), window=window)]
     if direction in ("ascending", "descending"):
         series = [s for s in series if s.orbit_state == direction]
     return series

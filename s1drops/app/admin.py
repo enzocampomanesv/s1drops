@@ -14,11 +14,35 @@ import solara
 from ipywidgets import Layout
 
 from ..cube import delete_cube, list_cubes
+from ..cube.geobox import aoi_to_geobox
 from ..cube.lcz import lcz_status
+from ..config import est_passes_per_year, native10_max_km2
 from . import auth, bakequeue, maputil, state
 
 REDUCTIONS = ["native_median", "overview_med"]
 AOI_MODES = ["registry", "bbox", "upload", "draw"]
+
+# label -> (resolution_m, reduction). Presets keep the 10 m + reduction combo sane.
+BAKE_PRESETS = {
+    "100 m · native median": (100.0, "native_median"),
+    "100 m · overview (fast)": (100.0, "overview_med"),
+    "10 m · native (small AOI)": (10.0, "native_median"),
+}
+
+
+def _preset_for(resolution, reduction) -> str:
+    for label, (r, red) in BAKE_PRESETS.items():
+        if round(r) == round(resolution or 100) and red == (reduction or "native_median"):
+            return label
+    return "100 m · native median"
+
+
+def _days_between(a: str, b: str) -> int:
+    from datetime import date
+    try:
+        return max((date.fromisoformat(str(b)[:10]) - date.fromisoformat(str(a)[:10])).days, 0)
+    except ValueError:
+        return 0
 
 
 def _valid_lonlat(bbox) -> Optional[str]:
@@ -97,7 +121,7 @@ def BuildForm(cache_dir: str):
     maxy = solara.use_reactive(6.75)
     start = solara.use_reactive("2024-01-01")
     end = solara.use_reactive("2025-01-01")
-    reduction = solara.use_reactive("native_median")
+    bake_type = solara.use_reactive("100 m · native median")
     geojson_text = solara.use_reactive("")  # from upload or draw
     chosen = solara.use_reactive("")         # existing-cube key (registry mode)
 
@@ -115,7 +139,7 @@ def BuildForm(cache_dir: str):
             name.set(e.name)
             start.set(e.start)
             end.set(e.end)
-            reduction.set(e.reduction or "native_median")
+            bake_type.set(_preset_for(e.resolution, e.reduction))
             mnx, mny, mxx, mxy = e.bbox_ll
             minx.set(mnx); miny.set(mny); maxx.set(mxx); maxy.set(mxy)
     solara.use_effect(_prefill_from_chosen, [chosen.value, mode.value])
@@ -148,10 +172,19 @@ def BuildForm(cache_dir: str):
         if err:
             result.set(err)
             return
-        label = f"{name.value or 'cube'} · {start.value}..{end.value} · {reduction.value}"
+        res, red = BAKE_PRESETS[bake_type.value]
+        gbox, _ = aoi_to_geobox(bbox, res)
+        area_km2 = int(gbox.shape.y) * int(gbox.shape.x) * res * res / 1e6
+        if res <= 50 and area_km2 > native10_max_km2():
+            result.set(
+                f"Error: AOI {area_km2:.1f} km² exceeds the {native10_max_km2():.0f} km² "
+                "cap for 10 m bakes. Shrink the AOI or pick a 100 m preset."
+            )
+            return
+        label = f"{name.value or 'cube'} · {int(round(res))} m · {start.value}..{end.value}"
         bakequeue.enqueue(
             label=label, bbox=bbox, geom=geom, start=start.value, end=end.value,
-            name=name.value or None, reduction=reduction.value, cache_dir=cache_dir,
+            name=name.value or None, reduction=red, resolution=res, cache_dir=cache_dir,
         )
         result.set(f"Queued: {label}")
 
@@ -197,7 +230,26 @@ def BuildForm(cache_dir: str):
     with solara.Row():
         solara.InputText("Start (YYYY-MM-DD)", value=start)
         solara.InputText("End (YYYY-MM-DD)", value=end)
-    solara.Select("Reduction", value=reduction, values=REDUCTIONS)
+    solara.Select("Bake type", value=bake_type, values=list(BAKE_PRESETS))
+    _res, _red = BAKE_PRESETS[bake_type.value]
+    _bbox_rd, _geom_rd, _err_rd = resolve_aoi()
+    if not _err_rd and _bbox_rd is not None:
+        _g, _ = aoi_to_geobox(_bbox_rd, _res)
+        _ny, _nx = int(_g.shape.y), int(_g.shape.x)
+        _cells = _ny * _nx
+        _area = _cells * _res * _res / 1e6
+        _yrs = max(_days_between(start.value, end.value), 1) / 365.0
+        _passes = est_passes_per_year() * _yrs
+        _est_gb = _cells * _passes * 2 * 4 * 1.3 / 1e9
+        solara.Markdown(
+            f"_AOI ≈ **{_area:.2f} km²** · grid {_ny}×{_nx} = {_cells:,} cells · "
+            f"est. size ~{_est_gb:.2f} GB (≈{_passes:.0f} passes)_"
+        )
+        if _res <= 50 and _area > native10_max_km2():
+            solara.Error(
+                f"AOI {_area:.1f} km² exceeds the {native10_max_km2():.0f} km² cap for "
+                "10 m bakes — shrink the AOI or pick a 100 m preset before queuing."
+            )
     solara.Button("Add to queue", on_click=do_enqueue, color="primary")
     if result.value:
         (solara.Success if result.value.startswith("Queued") else solara.Error)(result.value)

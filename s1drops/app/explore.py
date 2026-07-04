@@ -123,6 +123,7 @@ def Explore(cache_dir: str = "./cache"):
     lcz_sel = solara.use_reactive(LCZ_DEFAULT_SEL)
     hotspot_min = solara.use_reactive(0.0)          # applied (drives redraw)
     hotspot_min_pending = solara.use_reactive(0.0)  # live slider value
+    neighborhood = solara.use_reactive(True)        # 3x3 neighborhood detection (10 m only)
 
     def _ensure_key():
         if keys and cube_key.value not in keys:
@@ -177,6 +178,8 @@ def Explore(cache_dir: str = "./cache"):
         return
 
     has_lcz = logic.has_lcz(cube)
+    is_native10 = float(cube.attrs.get("resolution", 100.0)) <= 50  # neighborhood only here
+    nbhd_window = 1 if (is_native10 and neighborhood.value) else 0   # 1 => 3x3 median
 
     # resolve click -> cell -> series + detection (hard-restricted to allowed LCZ)
     cell = None
@@ -199,7 +202,8 @@ def Explore(cache_dir: str = "./cache"):
 
     series, results, rows = [], [], []
     if cell is not None:
-        series = logic.select_series(cube, cell[0], cell[1], pol, orbit_dir.value)
+        series = logic.select_series(cube, cell[0], cell[1], pol, orbit_dir.value,
+                                     window=nbhd_window)
         results = logic.run_detection(series, start=start, end=end, method=method.value, **params)
         rows = logic.drop_rows(results)
 
@@ -240,6 +244,9 @@ def Explore(cache_dir: str = "./cache"):
                 f"_{len(lcz_classes)} class(es). Cells outside are hidden and not clickable._"
             )
         solara.Markdown("---\n**Detection**")
+        if is_native10:
+            solara.Checkbox(label="Detect on 3×3 neighborhood (10 m speckle)",
+                            value=neighborhood)
         solara.Select("Method", value=method, values=["pelt", "threshold"])
         if method.value == "pelt":
             solara.SliderFloat("Sensitivity", value=sensitivity, min=0.2, max=5.0, step=0.1)
@@ -300,4 +307,4 @@ def _overlay(cube, pol, start, end, orbit_dir, kind, lcz_classes, hotspot_min=0.
     # threshold only hides cells (NaN -> transparent), it doesn't rescale colour.
     vmax = float(np.nanpercentile(layer, 98)) if np.isfinite(layer).any() else 1.0
     disp = layer if hotspot_min <= 0 else np.where(layer >= hotspot_min, layer, np.nan)
-    return render.overlay_from_array(disp, cube, cmap="RdBu_r", vmin=0.0, vmax=vmax)
+    return render.overlay_from_array(disp, cube, cmap="cool", vmin=0.0, vmax=vmax)

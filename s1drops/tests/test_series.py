@@ -82,3 +82,26 @@ def test_extract_series_splits_by_pol_and_orbit():
     vh = next(s for s in series if s.pol == "vh" and s.relative_orbit == 1)
     ratio = next(s for s in series if s.pol == "vv_vh" and s.relative_orbit == 1)
     np.testing.assert_allclose(ratio.values_db, vv.values_db - vh.values_db)
+
+
+def test_neighbourhood_window_medians_out_center():
+    # 3x3 grid, 4 timesteps, one ascending orbit. Centre pixel is a bright outlier
+    # (1.0 linear) against uniform neighbours (0.1 linear).
+    n = 4
+    t = np.datetime64("2024-01-01") + np.arange(n) * np.timedelta64(12, "D")
+    vv = np.full((n, 3, 3), 0.1, dtype="float32")
+    vv[:, 1, 1] = 1.0
+    cube = xr.Dataset(
+        {"vv": (("time", "y", "x"), vv), "vh": (("time", "y", "x"), vv.copy())},
+        coords={"time": t, "y": [0, 1, 2], "x": [0, 1, 2],
+                "relative_orbit": ("time", np.ones(n, "int32")),
+                "orbit_state": ("time", np.array(["ascending"] * n, "<U10"))},
+    )
+    # window=0: the single bright centre pixel -> 10log10(1.0) = 0 dB
+    s0 = extract_series(cube, 1, 1, pols=("vv",), window=0)[0]
+    assert np.allclose(s0.values_db, 0.0, atol=1e-6)
+    # window=1: 3x3 median = median([0.1]*8 + [1.0]) = 0.1 -> 10log10(0.1) = -10 dB
+    s1 = extract_series(cube, 1, 1, pols=("vv",), window=1)[0]
+    assert np.allclose(s1.values_db, -10.0, atol=1e-6)
+    # and the neighbourhood series is smoother (lower spread) than the raw pixel here
+    assert np.nanstd(s1.values_db) <= np.nanstd(s0.values_db)

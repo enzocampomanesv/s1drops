@@ -25,12 +25,13 @@ _lock = threading.Lock()              # guards queue mutations + worker_running 
 _ids = itertools.count(1)
 
 
-def enqueue(*, label, bbox, geom, start, end, name, reduction, cache_dir) -> int:
+def enqueue(*, label, bbox, geom, start, end, name, reduction, resolution, cache_dir) -> int:
     """Add a job and make sure the worker is running. Returns the job id."""
     job = {
         "id": next(_ids), "label": label, "status": "pending", "log": [], "result": "",
         "params": {"bbox": bbox, "geom": geom, "start": start, "end": end,
-                   "name": name, "reduction": reduction, "cache_dir": cache_dir},
+                   "name": name, "reduction": reduction, "resolution": resolution,
+                   "cache_dir": cache_dir},
     }
     with _lock:
         queue.set(queue.value + [job])
@@ -89,7 +90,8 @@ def _drain() -> None:
         try:
             entry, changed = bake_or_extend(
                 p["bbox"], p["start"], p["end"], name=p["name"], aoi_geom=p["geom"],
-                reduction=p["reduction"], cache_dir=p["cache_dir"],
+                reduction=p["reduction"], resolution=p["resolution"],
+                cache_dir=p["cache_dir"],
                 progress=lambda m, _jid=jid: _append_log(_jid, m),
             )
             msg = (f"{'Built/updated' if changed else 'Already covered'}: {entry.key} — "

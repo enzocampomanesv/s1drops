@@ -109,3 +109,85 @@ def test_usable_metas_filters_by_band():
     assert len(keep) == 2                      # only the dual VV/VH scenes
     assert usable_metas(metas, ("vv",)) and len(usable_metas(metas, ("vv",))) == 3
     assert usable_metas([m(("hh", "hv"))], ("vv", "vh")) == []
+
+
+def test_merge_time_tolerates_spatial_ref_mismatch():
+    import numpy as np
+    import xarray as xr
+    from s1drops.cube.manage import merge_time
+
+    def mini(day, with_sr):
+        n = 4
+        t = np.datetime64(day) + np.arange(n) * np.timedelta64(12, "D")
+        ds = xr.Dataset(
+            {"vv": (("time", "y", "x"), np.ones((n, 2, 2), "float32"))},
+            coords={"time": t, "x": [0, 1], "y": [0, 1],
+                    "relative_orbit": ("time", np.ones(n, "int32")),
+                    "orbit_state": ("time", np.array(["ascending"] * n, "<U10"))},
+        )
+        return ds.assign_coords(spatial_ref=0) if with_sr else ds
+
+    old = mini("2024-01-01", with_sr=False)   # zarr-read cube without the CRS coord
+    new = mini("2025-01-01", with_sr=True)     # fresh odc part with spatial_ref
+    merged = merge_time([old, new])
+    assert merged.sizes["time"] == 8
+    assert "spatial_ref" not in merged.coords
+
+
+def test_write_read_roundtrip(tmp_path):
+    import numpy as np
+    import xarray as xr
+    from s1drops.cube.cache import write_cube, read_cube
+
+    n = 5
+    t = np.datetime64("2024-01-01") + np.arange(n) * np.timedelta64(12, "D")
+    cube = xr.Dataset(
+        {"vv": (("time", "y", "x"), np.ones((n, 4, 4), "float32"))},
+        coords={"time": t, "x": [0, 1, 2, 3], "y": [0, 1, 2, 3],
+                "relative_orbit": ("time", np.ones(n, "int32")),
+                "orbit_state": ("time", np.array(["ascending"] * n, "<U10"))},
+    )
+    cube["aoi_mask"] = (("y", "x"), np.ones((4, 4), bool))
+    p = write_cube(cube, tmp_path / "c.zarr")
+    back = read_cube(p)
+    assert back.sizes["time"] == n
+    assert str(back["orbit_state"].values[0]) == "ascending"  # decode roundtrip
+    # overwrite (exercises the pre-clean path) succeeds
+    write_cube(cube, tmp_path / "c.zarr")
+
+
+def test_registry_path_is_portable(tmp_path):
+    import json
+    from s1drops.cube.registry import REGISTRY_NAME, list_cubes
+
+    reg = {"nairobi_x": {
+        "key": "nairobi_x", "name": "nairobi", "path": r"C:\old\cache\nairobi_x.zarr",
+        "crs": "EPSG:32637", "grid_transform": [100, 0, 0, 0, -100, 0], "grid_shape": [2, 2],
+        "bbox_ll": [], "start": "2024-01-01", "end": "2024-02-01",
+        "resolution": 100.0, "reduction": "native_median", "n_passes": 1,
+        "created_at": "2024-01-01T00:00:00+00:00"}}
+    (tmp_path / REGISTRY_NAME).write_text(json.dumps(reg))
+    cubes = list_cubes(tmp_path)
+    assert len(cubes) == 1
+    assert cubes[0].path == str(tmp_path / "nairobi_x.zarr")  # resolved to current cache dir
+
+
+def test_reduction_tag_resolution_aware():
+    from s1drops.cube.cache import _reduction_tag, cache_key
+    # 100 m keeps the bare tag (backward-compatible with v1 keys)
+    assert _reduction_tag("native_median", 100.0) == "nm"
+    assert _reduction_tag("overview_med", 100.0) == "ov"
+    # non-100 m is suffixed so it can't collide with the 100 m cube
+    assert _reduction_tag("native_median", 10.0) == "nm10"
+    assert _reduction_tag("overview_med", 10.0) == "ov10"
+
+
+def test_cache_key_10m_and_100m_distinct():
+    from s1drops.cube.cache import cache_key
+    k100 = cache_key((0, 0, 1, 1), "2024-01-01", "2025-01-01",
+                     resolution=100.0, reduction="native_median", name="lagos")
+    k10 = cache_key((0, 0, 1, 1), "2024-01-01", "2025-01-01",
+                    resolution=10.0, reduction="native_median", name="lagos")
+    assert k100 == "lagos_2024-01-01_2025-01-01_nm"      # unchanged from v1
+    assert k10 == "lagos_2024-01-01_2025-01-01_nm10"
+    assert k100 != k10                                    # no filename collision

@@ -23,6 +23,7 @@ import xarray as xr
 from .geobox import DEFAULT_RES, aoi_to_geobox, rasterize_mask, refine_geobox
 from .lcz import lcz_for_geobox, resolve_lcz_path
 from .stac import DEFAULT_BANDS, ItemMeta, open_catalog, search_items
+from ..config import max_cube_bytes
 
 Bbox = Tuple[float, float, float, float]
 
@@ -100,6 +101,25 @@ def usable_metas(metas: Sequence[ItemMeta], bands: Sequence[str]) -> list:
     return [m for m in metas if all(b in m.pols for b in bands)]
 
 
+def estimate_timesteps(usable: Sequence[ItemMeta]) -> int:
+    """Number of time slices the cube will have: one per (relative_orbit, solar_day).
+
+    Matches the per-orbit `groupby="solar_day"` load, so it's the true count, not
+    a heuristic. Used to size the memory guard before any pixels are loaded.
+    """
+    seen = set()
+    for m in usable:
+        dt = getattr(m.item, "datetime", None)
+        day = dt.date().isoformat() if dt is not None else m.item.id
+        seen.add((m.relative_orbit, day))
+    return len(seen)
+
+
+def estimate_cube_bytes(n_cells: int, n_timesteps: int, n_bands: int) -> float:
+    """Estimated in-memory cube size (float32 + 30% headroom for coords/masks)."""
+    return n_cells * n_timesteps * n_bands * 4 * 1.3
+
+
 def build_cube(
     bbox_ll: Bbox,
     start: str,
@@ -113,6 +133,7 @@ def build_cube(
     catalog=None,
     chunks: Optional[dict] = None,
     lcz_path: Optional[str] = None,
+    max_bytes: Optional[float] = None,
 ) -> Tuple[xr.Dataset, str]:
     """Search, load per track, and assemble the long-form cube. Returns (cube, utm)."""
     if reduction not in REDUCTIONS:
@@ -131,6 +152,20 @@ def build_cube(
     skipped = len(metas) - len(usable)
 
     gbox, utm = aoi_to_geobox(bbox_ll, resolution)
+
+    # Memory guard: refuse before loading anything if the cube would be too big.
+    # write_cube() materialises the whole cube into RAM, so this bounds peak use.
+    budget = max_cube_bytes() if max_bytes is None else max_bytes
+    n_cells = int(gbox.shape.y) * int(gbox.shape.x)
+    n_ts = estimate_timesteps(usable)
+    est = estimate_cube_bytes(n_cells, n_ts, len(bands))
+    if est > budget:
+        raise RuntimeError(
+            f"Estimated cube ~{est / 1e9:.1f} GB "
+            f"({n_cells:,} cells × {n_ts} passes × {len(bands)} bands at "
+            f"{int(round(resolution))} m) exceeds the {budget / 1e9:.1f} GB budget. "
+            "Reduce the AOI or the date range (or raise S1DROPS_MAX_CUBE_BYTES)."
+        )
 
     by_ro = defaultdict(list)
     state_of = {}

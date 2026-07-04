@@ -51,6 +51,17 @@ def _decode_orbit(cube: xr.Dataset) -> xr.Dataset:
 REDUCTION_TAGS = {"native_median": "nm", "overview_med": "ov"}
 
 
+def _reduction_tag(reduction: str, resolution: float) -> str:
+    """Filename tag for (reduction, resolution).
+
+    Backward-compatible: 100 m keeps the bare tag (`nm`, `ov`) so existing v1
+    cubes are unaffected; other resolutions are suffixed (`nm10`) so e.g. a 10 m
+    and a 100 m native_median cube of the same AOI never collide on one key.
+    """
+    base = REDUCTION_TAGS.get(reduction, reduction)
+    return base if round(resolution) == 100 else f"{base}{int(round(resolution))}"
+
+
 def cache_key(
     bbox_ll: Bbox,
     start: str,
@@ -61,7 +72,7 @@ def cache_key(
     reduction: str = "native_median",
     name: Optional[str] = None,
 ) -> str:
-    tag = REDUCTION_TAGS.get(reduction, reduction)
+    tag = _reduction_tag(reduction, resolution)
     if name:
         return f"{name}_{start}_{end}_{tag}"
     payload = json.dumps(

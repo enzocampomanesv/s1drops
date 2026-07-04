@@ -19,9 +19,10 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 import xarray as xr
 
-from .build import build_cube
+from .build import build_cube, estimate_cube_bytes
 from .cache import DEFAULT_CACHE_DIR, cache_key, cube_path, read_cube, write_cube
 from .geobox import aoi_to_geobox
+from ..config import max_cube_bytes
 from .registry import (
     CubeEntry,
     delete_cube,
@@ -148,6 +149,17 @@ def bake_or_extend(
     union_start = min(_d(prev.start), _d(start))
     union_end = max(_d(prev.end), _d(end))
     merged.attrs.update({"name": prev.name, "start": _s(union_start), "end": _s(union_end)})
+
+    # Guard the merged cube: write_cube() loads it fully into RAM. Estimate from
+    # sizes (no load) and refuse before materialising if it exceeds the budget.
+    n_cells = int(merged.sizes["y"]) * int(merged.sizes["x"])
+    n_bands = sum(b in merged for b in ("vv", "vh")) or 1
+    est = estimate_cube_bytes(n_cells, int(merged.sizes["time"]), n_bands)
+    if est > max_cube_bytes():
+        raise RuntimeError(
+            f"Merged cube ~{est / 1e9:.1f} GB exceeds the {max_cube_bytes() / 1e9:.1f} GB "
+            "budget. Extend over a smaller added range (or raise S1DROPS_MAX_CUBE_BYTES)."
+        )
 
     new_key = cache_key(
         bbox_ll, _s(union_start), _s(union_end),
