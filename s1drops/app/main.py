@@ -18,7 +18,7 @@ CACHE_DIR = os.environ.get("S1DROPS_CACHE_DIR", "./cache")
 
 @solara.component
 def Page():
-    solara.Title("S1 backscatter drops")
+    solara.Title("Rapid change detection tool")
     # Render the active tab's content conditionally (not as hidden Tabs panels):
     # the Explore map must mount into a full-size container, otherwise Leaflet
     # caches a zero/stale size while hidden and paints in the corner on return.

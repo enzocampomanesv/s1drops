@@ -98,6 +98,34 @@ def overlay_from_array(
     return png_data_url(colorize(merc, cmap=cmap, vmin=vmin, vmax=vmax)), bounds
 
 
+def overlay_rgb(rgb: np.ndarray, transform, crs) -> Tuple[str, LatLonBounds]:
+    """3-band uint8 RGB on a UTM grid -> (PNG data URL, lat/lon bounds) in EPSG:3857.
+
+    Like `overlay_from_array` but for a true-colour image with an explicit geobox
+    transform/CRS (not a cube) — used for the Sentinel-2 optical overlays. Areas
+    outside the reprojected footprint are made transparent via a coverage mask.
+    """
+    st = transform if isinstance(transform, Affine) else Affine(*tuple(transform)[:6])
+    h0, w0 = rgb.shape[0], rgb.shape[1]
+    left, bottom, right, top = array_bounds(h0, w0, st)
+    dt, w, h = calculate_default_transform(str(crs), "EPSG:3857", w0, h0, left, bottom, right, top)
+    out = np.zeros((h, w, 4), dtype="uint8")
+    for i in range(3):
+        band = np.zeros((h, w), dtype="uint8")
+        reproject(rgb[:, :, i], band, src_transform=st, src_crs=str(crs),
+                  dst_transform=dt, dst_crs="EPSG:3857", resampling=Resampling.bilinear)
+        out[:, :, i] = band
+    cover = np.zeros((h, w), dtype="uint8")
+    reproject(np.ones((h0, w0), dtype="uint8"), cover, src_transform=st, src_crs=str(crs),
+              dst_transform=dt, dst_crs="EPSG:3857", resampling=Resampling.nearest)
+    out[:, :, 3] = np.where(cover > 0, 255, 0).astype("uint8")
+    bl, bb, br, bt = array_bounds(h, w, dt)
+    tx = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    west, south = tx.transform(bl, bb)
+    east, north = tx.transform(br, bt)
+    return png_data_url(out), [[south, west], [north, east]]
+
+
 def colorize_lcz(arr: np.ndarray) -> np.ndarray:
     """RGBA uint8 from LCZ class codes via the WUDAPT palette; non-classes transparent."""
     from ..cube.lcz import LCZ_RGB

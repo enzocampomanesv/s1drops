@@ -59,6 +59,27 @@ def run_detection(
 
 # ---- tables + CSV ----------------------------------------------------------
 
+def drop_options(results: Sequence[DetectionResult]) -> List[Dict]:
+    """Detected drops as selector options for optical anchoring, largest first.
+
+    Each option exposes only magnitude and the before/after dates (what the user
+    chooses on), plus the raw datetime64 anchors the fetch needs.
+    """
+    opts: List[Dict] = []
+    for res in results:
+        for d in res.drops:
+            opts.append({
+                "delta_db": round(float(d.delta_db), 2),
+                "date_before": d.date_before,   # np.datetime64 (anchor)
+                "date_after": d.date_after,      # np.datetime64 (anchor)
+                "label": (f"{d.delta_db:+.1f} dB · "
+                          f"{np.datetime_as_string(d.date_before, unit='D')} → "
+                          f"{np.datetime_as_string(d.date_after, unit='D')}"),
+            })
+    opts.sort(key=lambda o: abs(o["delta_db"]), reverse=True)
+    return opts
+
+
 def drop_rows(results: Sequence[DetectionResult]) -> List[Dict]:
     rows: List[Dict] = []
     for res in results:

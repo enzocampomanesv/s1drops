@@ -36,3 +36,40 @@ def max_cube_bytes() -> float:
 def est_passes_per_year() -> float:
     """Rough passes/year used ONLY for the live size estimate in the bake form."""
     return _env_float("S1DROPS_EST_PASSES_PER_YEAR", 40.0)
+
+
+# ---- Stage 2: Sentinel-2 optical before/after --------------------------------
+
+def s2_window_days() -> float:
+    """Half-window (days) each side of a drop to search for a clear S2 scene."""
+    return _env_float("S1DROPS_S2_WINDOW_DAYS", 45.0)
+
+
+def s2_cloud_thresh() -> float:
+    """Max AOI cloud fraction (0-1) for a scene to count as 'clear enough'."""
+    return _env_float("S1DROPS_S2_CLOUD_THRESH", 0.10)
+
+
+def s2_max_probes() -> float:
+    """Hard ceiling on scenes per side whose AOI cloud is evaluated. Default covers
+    a normal +/-45 d window so a clear scene anywhere in it is found; raise for
+    wider windows, lower to bound cost."""
+    return _env_float("S1DROPS_S2_MAX_PROBES", 24.0)
+
+
+def s2_candidates() -> float:
+    """How many before/after scenes to offer per side (all under the cloud threshold,
+    clearest first), cycled with arrows in the UI."""
+    return _env_float("S1DROPS_S2_CANDIDATES", 3.0)
+
+
+def s2_cloud_bucket() -> float:
+    """Cloud-cover band width (%) for ranking: scenes are sorted by cloud rounded to
+    this bucket, then proximity — so meaningfully clearer scenes win across buckets
+    while similarly-clear scenes prefer the nearer date."""
+    return _env_float("S1DROPS_S2_CLOUD_BUCKET", 5.0)
+
+
+def optical_radius_m() -> float:
+    """Half-size (m) of the box fetched around a clicked drop (default 1 km -> 2 km box)."""
+    return _env_float("S1DROPS_OPTICAL_RADIUS_M", 1000.0)

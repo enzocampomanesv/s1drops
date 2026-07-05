@@ -22,7 +22,7 @@ from rasterio.enums import Resampling
 ENV_VAR = "S1DROPS_LCZ_PATH"
 
 # Default analysis filter: lower-rise / informal-relevant built classes.
-DEFAULT_CLASSES = (2, 3, 6, 7, 9)
+DEFAULT_CLASSES = (3, 6, 7, 8)
 
 LCZ_NAMES = {
     1: "Compact high-rise", 2: "Compact midrise", 3: "Compact low-rise",
