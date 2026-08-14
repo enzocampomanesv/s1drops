@@ -7,18 +7,34 @@ boolean cell mask aligned to that GeoBox.
 """
 from __future__ import annotations
 
+import json
 import math
-from typing import Tuple
+from typing import Tuple, Union
 
 import numpy as np
 from odc.geo.geobox import GeoBox
 from pyproj import Transformer
 from rasterio.features import rasterize
-from shapely.geometry import mapping
+from shapely.geometry import mapping, shape
 from shapely.ops import transform as shp_transform
 
 Bbox = Tuple[float, float, float, float]
 DEFAULT_RES = 100.0
+
+
+def geom_from_geojson(source: Union[str, bytes, dict]):
+    """Shapely geometry from a GeoJSON string, bytes, or already-parsed dict.
+
+    Accepts the three shapes an AOI arrives in — a bare geometry, a Feature, or a
+    FeatureCollection (first feature) — so the CLI's file input and the app's
+    upload/draw inputs agree on what a valid AOI is.
+    """
+    gj = json.loads(source) if isinstance(source, (str, bytes)) else source
+    if gj.get("type") == "FeatureCollection":
+        return shape(gj["features"][0]["geometry"])
+    if gj.get("type") == "Feature":
+        return shape(gj["geometry"])
+    return shape(gj)
 
 
 def utm_epsg(lon: float, lat: float) -> str:

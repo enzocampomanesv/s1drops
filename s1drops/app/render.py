@@ -37,13 +37,29 @@ def src_transform(cube: xr.Dataset) -> Affine:
     return Affine(res, 0.0, xs[0] - res / 2, 0.0, -res, ys[0] + res / 2)
 
 
+def _dst_grid(src_transform_: Affine, src_crs, h0: int, w0: int):
+    """Web-mercator grid covering a source raster. Returns (transform, width, height)."""
+    left, bottom, right, top = array_bounds(h0, w0, src_transform_)
+    return calculate_default_transform(
+        str(src_crs), "EPSG:3857", w0, h0, left, bottom, right, top
+    )
+
+
+def _latlon_bounds(dst_transform: Affine, h: int, w: int) -> LatLonBounds:
+    """[[south, west], [north, east]] of a web-mercator grid, for an ImageOverlay."""
+    bl, bb, br, bt = array_bounds(h, w, dst_transform)
+    tx = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    west, south = tx.transform(bl, bb)
+    east, north = tx.transform(br, bt)
+    return [[south, west], [north, east]]
+
+
 def to_webmercator(arr: np.ndarray, cube: xr.Dataset) -> Tuple[np.ndarray, LatLonBounds]:
     """Reproject a (y, x) UTM array to EPSG:3857. Returns (arr3857, latlon bounds)."""
     src_crs = cube.attrs.get("crs", "EPSG:4326")
     st = src_transform(cube)
     h0, w0 = arr.shape
-    left, bottom, right, top = array_bounds(h0, w0, st)
-    dt, w, h = calculate_default_transform(src_crs, "EPSG:3857", w0, h0, left, bottom, right, top)
+    dt, w, h = _dst_grid(st, src_crs, h0, w0)
     dst = np.full((h, w), np.nan, dtype="float64")
     reproject(
         arr.astype("float64"), dst,
@@ -51,11 +67,7 @@ def to_webmercator(arr: np.ndarray, cube: xr.Dataset) -> Tuple[np.ndarray, LatLo
         dst_transform=dt, dst_crs="EPSG:3857",
         resampling=Resampling.nearest, src_nodata=np.nan, dst_nodata=np.nan,
     )
-    bl, bb, br, bt = array_bounds(h, w, dt)
-    tx = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    west, south = tx.transform(bl, bb)
-    east, north = tx.transform(br, bt)
-    return dst, [[south, west], [north, east]]
+    return dst, _latlon_bounds(dt, h, w)
 
 
 def colorize(
@@ -107,8 +119,7 @@ def overlay_rgb(rgb: np.ndarray, transform, crs) -> Tuple[str, LatLonBounds]:
     """
     st = transform if isinstance(transform, Affine) else Affine(*tuple(transform)[:6])
     h0, w0 = rgb.shape[0], rgb.shape[1]
-    left, bottom, right, top = array_bounds(h0, w0, st)
-    dt, w, h = calculate_default_transform(str(crs), "EPSG:3857", w0, h0, left, bottom, right, top)
+    dt, w, h = _dst_grid(st, crs, h0, w0)
     out = np.zeros((h, w, 4), dtype="uint8")
     for i in range(3):
         band = np.zeros((h, w), dtype="uint8")
@@ -119,11 +130,7 @@ def overlay_rgb(rgb: np.ndarray, transform, crs) -> Tuple[str, LatLonBounds]:
     reproject(np.ones((h0, w0), dtype="uint8"), cover, src_transform=st, src_crs=str(crs),
               dst_transform=dt, dst_crs="EPSG:3857", resampling=Resampling.nearest)
     out[:, :, 3] = np.where(cover > 0, 255, 0).astype("uint8")
-    bl, bb, br, bt = array_bounds(h, w, dt)
-    tx = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    west, south = tx.transform(bl, bb)
-    east, north = tx.transform(br, bt)
-    return png_data_url(out), [[south, west], [north, east]]
+    return png_data_url(out), _latlon_bounds(dt, h, w)
 
 
 def colorize_lcz(arr: np.ndarray) -> np.ndarray:

@@ -14,7 +14,7 @@ import solara
 from ipywidgets import Layout
 
 from ..cube import delete_cube, list_cubes
-from ..cube.geobox import aoi_to_geobox
+from ..cube.geobox import aoi_to_geobox, geom_from_geojson
 from ..cube.lcz import lcz_status
 from ..config import est_passes_per_year, native10_max_km2
 from . import auth, bakequeue, maputil, state
@@ -51,18 +51,6 @@ def _valid_lonlat(bbox) -> Optional[str]:
         return ("Coordinates must be WGS84 lon/lat (EPSG:4326), lon in [-180,180], "
                 "lat in [-90,90], min < max. Projected/UTM input is not accepted.")
     return None
-
-
-def _geom_from_geojson(text: str):
-    from shapely.geometry import shape
-    gj = json.loads(text)
-    if gj.get("type") == "FeatureCollection":
-        geom = shape(gj["features"][0]["geometry"])
-    elif gj.get("type") == "Feature":
-        geom = shape(gj["geometry"])
-    else:
-        geom = shape(gj)
-    return geom
 
 
 @solara.component
@@ -156,7 +144,7 @@ def BuildForm(cache_dir: str):
         if not geojson_text.value:
             return None, None, "No geometry provided (upload a GeoJSON or draw one)."
         try:
-            geom = _geom_from_geojson(geojson_text.value)
+            geom = geom_from_geojson(geojson_text.value)
         except Exception as e:
             return None, None, f"Could not parse GeoJSON: {e}"
         bbox = tuple(geom.bounds)

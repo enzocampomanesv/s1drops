@@ -13,25 +13,18 @@ bakes only the missing dates and merges. `delete` is an admin operation.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Tuple
 
 from .cube import bake_or_extend, delete_cube, list_cubes, rescan
+from .cube.geobox import geom_from_geojson
 
 Bbox = Tuple[float, float, float, float]
 
 
 def _read_aoi(path: str):
-    from shapely.geometry import shape
-
-    gj = json.loads(Path(path).read_text())
-    if gj.get("type") == "FeatureCollection":
-        geom = shape(gj["features"][0]["geometry"])
-    elif gj.get("type") == "Feature":
-        geom = shape(gj["geometry"])
-    else:
-        geom = shape(gj)
+    """(bbox, geometry) for a GeoJSON AOI file."""
+    geom = geom_from_geojson(Path(path).read_text())
     return tuple(geom.bounds), geom
 
 

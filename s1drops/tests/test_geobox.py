@@ -1,7 +1,22 @@
+import json
+
 import numpy as np
+import pytest
 from shapely.geometry import box
 
-from s1drops.cube.geobox import aoi_to_geobox, rasterize_mask, refine_geobox, utm_epsg
+from s1drops.cube.geobox import (
+    aoi_to_geobox,
+    geom_from_geojson,
+    rasterize_mask,
+    refine_geobox,
+    utm_epsg,
+)
+
+_POLY = {"type": "Polygon",
+         "coordinates": [[[3.35, 6.40], [3.50, 6.40], [3.50, 6.50],
+                          [3.35, 6.50], [3.35, 6.40]]]}
+_FEATURE = {"type": "Feature", "geometry": _POLY, "properties": {"name": "aoi"}}
+_COLLECTION = {"type": "FeatureCollection", "features": [_FEATURE]}
 
 
 def test_utm_epsg_zones():
@@ -38,6 +53,26 @@ def test_rasterize_mask_inside_polygon():
     # full-bbox polygon should mark (almost) everything inside
     full = box(*bbox)
     assert rasterize_mask(full, gbox).mean() > 0.95
+
+
+@pytest.mark.parametrize("obj", [_POLY, _FEATURE, _COLLECTION],
+                         ids=["geometry", "feature", "collection"])
+def test_geom_from_geojson_unwraps_every_aoi_shape(obj):
+    """CLI (--aoi file) and app (upload/draw) share one parser, so all three
+    GeoJSON shapes must yield the same geometry."""
+    expected = box(3.35, 6.40, 3.50, 6.50)
+    for source in (obj, json.dumps(obj), json.dumps(obj).encode()):
+        geom = geom_from_geojson(source)
+        assert geom.equals(expected)
+        assert tuple(round(v, 6) for v in geom.bounds) == (3.35, 6.40, 3.50, 6.50)
+
+
+def test_geom_from_geojson_collection_takes_first_feature():
+    second = {"type": "Feature", "properties": {},
+              "geometry": {"type": "Polygon",
+                           "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]}}
+    fc = {"type": "FeatureCollection", "features": [_FEATURE, second]}
+    assert geom_from_geojson(fc).equals(box(3.35, 6.40, 3.50, 6.50))
 
 
 def test_refine_geobox_is_exact_integer_refinement():

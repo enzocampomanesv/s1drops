@@ -13,7 +13,13 @@ from .build import (  # noqa: E402
     tag_track,
 )
 from .cache import build_or_load, cache_key, cube_path, read_cube, write_cube  # noqa: E402
-from .geobox import aoi_to_geobox, rasterize_mask, refine_geobox, utm_epsg  # noqa: E402
+from .geobox import (  # noqa: E402
+    aoi_to_geobox,
+    geom_from_geojson,
+    rasterize_mask,
+    refine_geobox,
+    utm_epsg,
+)
 from .manage import bake_or_extend, merge_time, missing_ranges  # noqa: E402
 from .registry import (  # noqa: E402
     CubeEntry,
@@ -30,6 +36,7 @@ from .stac import ItemMeta, search_items  # noqa: E402
 
 __all__ = [
     "aoi_to_geobox",
+    "geom_from_geojson",
     "rasterize_mask",
     "refine_geobox",
     "utm_epsg",

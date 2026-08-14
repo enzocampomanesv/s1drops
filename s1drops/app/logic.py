@@ -97,11 +97,16 @@ def drop_rows(results: Sequence[DetectionResult]) -> List[Dict]:
     return rows
 
 
+def _cell_ids(cell) -> Tuple[str, object, object]:
+    """(cell_id, row, col) columns for an export; blanks when no cell is given."""
+    if cell is None:
+        return "", "", ""
+    return f"{cell[0]}_{cell[1]}", cell[0], cell[1]
+
+
 def drops_csv(results: Sequence[DetectionResult], *, cell=None) -> str:
     rows = drop_rows(results)
-    cid = f"{cell[0]}_{cell[1]}" if cell is not None else ""
-    crow = cell[0] if cell is not None else ""
-    ccol = cell[1] if cell is not None else ""
+    cid, crow, ccol = _cell_ids(cell)
     for r in rows:
         r["cell_id"], r["cell_row"], r["cell_col"] = cid, crow, ccol
     fields = ["cell_id", "cell_row", "cell_col", "series", "pol", "relative_orbit",
@@ -115,9 +120,7 @@ def drops_csv(results: Sequence[DetectionResult], *, cell=None) -> str:
 
 
 def series_csv(series_list: Sequence[Series], *, start=None, end=None, cell=None) -> str:
-    cid = f"{cell[0]}_{cell[1]}" if cell is not None else ""
-    crow = cell[0] if cell is not None else ""
-    ccol = cell[1] if cell is not None else ""
+    cid, crow, ccol = _cell_ids(cell)
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["cell_id", "cell_row", "cell_col", "date", "series", "pol",
@@ -152,8 +155,9 @@ def hotspot_geojson(
 
     from pyproj import Transformer
 
-    mag, before, after = _hotspot_with_timing(
-        cube, pol=pol, start=start, end=end, direction=direction, lcz_classes=lcz_classes
+    mag, before, after = _hotspot(
+        cube, pol=pol, start=start, end=end, direction=direction,
+        lcz_classes=lcz_classes, with_timing=True,
     )
     if min_value and min_value > 0:
         mag = np.where(mag >= min_value, mag, np.nan)
@@ -273,32 +277,17 @@ def lcz_layer(cube: xr.Dataset) -> np.ndarray:
     return np.where(aoi, arr, np.nan)
 
 
-def _max_stepdown(db: np.ndarray) -> np.ndarray:
+def _max_stepdown(db: np.ndarray, *, with_index: bool = False):
     """Per-cell largest single-split level drop (pre_mean - post_mean), in dB.
 
     Vectorised over (y, x) via cumulative sums along time; O(T) passes, each a
     whole-grid array op. Positive = a drop. NaN where a split lacks data either side.
+
+    with_index=True also returns the split index k of each cell's best drop (the
+    drop sits between time index k-1 and k), for callers that need to date it.
+    The index-tracking branch costs an extra whole-grid write per split, so the
+    plain form keeps the cheaper `fmax` accumulation for the map redraw path.
     """
-    t = db.shape[0]
-    valid = np.isfinite(db)
-    filled = np.where(valid, db, 0.0)
-    csum = np.cumsum(filled, axis=0)
-    ccnt = np.cumsum(valid, axis=0)
-    total, totcnt = csum[-1], ccnt[-1]
-    best = np.full(db.shape[1:], np.nan)
-    for k in range(1, t):
-        pre_sum, pre_cnt = csum[k - 1], ccnt[k - 1]
-        post_sum, post_cnt = total - pre_sum, totcnt - pre_cnt
-        with np.errstate(invalid="ignore", divide="ignore"):
-            drop = pre_sum / pre_cnt - post_sum / post_cnt
-        cand = np.where((pre_cnt >= 1) & (post_cnt >= 1), drop, np.nan)
-        best = np.fmax(best, cand)
-    return best
-
-
-def _max_stepdown_k(db: np.ndarray):
-    """Like _max_stepdown but also returns the split index k of the best drop
-    per cell (drop sits between time index k-1 and k). Returns (best, best_k)."""
     t = db.shape[0]
     valid = np.isfinite(db)
     filled = np.where(valid, db, 0.0)
@@ -313,64 +302,58 @@ def _max_stepdown_k(db: np.ndarray):
         with np.errstate(invalid="ignore", divide="ignore"):
             drop = pre_sum / pre_cnt - post_sum / post_cnt
         cand = np.where((pre_cnt >= 1) & (post_cnt >= 1), drop, np.nan)
-        better = np.isfinite(cand) & (~np.isfinite(best) | (cand > best))
-        best = np.where(better, cand, best)
-        best_k = np.where(better, k, best_k)
-    return best, best_k
+        if with_index:
+            # Equivalent to fmax, but records which split won.
+            better = np.isfinite(cand) & (~np.isfinite(best) | (cand > best))
+            best = np.where(better, cand, best)
+            best_k = np.where(better, k, best_k)
+        else:
+            best = np.fmax(best, cand)
+    return (best, best_k) if with_index else best
 
 
-def hotspot_layer(
-    cube: xr.Dataset, *, pol: str = "vv", start=None, end=None, direction: str = "both",
-    lcz_classes: Optional[Sequence[int]] = None,
-) -> np.ndarray:
-    """Per-cell max sustained drop (dB) over the range, max across matching orbits."""
-    db = _pol_db_cube(cube, pol)
+def _orbit_selections(cube: xr.Dataset, start, end, direction: str):
+    """Yield the per-relative-orbit time masks that a hotspot reduction runs over.
+
+    Orbits are kept separate so look geometries are never mixed; an orbit with
+    fewer than two passes in the window has no split to measure and is skipped.
+    """
     tm = _time_mask(cube, start, end)
     ro = np.asarray(cube["relative_orbit"].values)
     state = np.asarray(cube["orbit_state"].values)
-
-    layer = None
     for ro_val in np.unique(ro):
         sel = tm & (ro == ro_val)
         if direction in ("ascending", "descending"):
             sel = sel & (state == direction)
-        if sel.sum() < 2:
-            continue
-        cand = _max_stepdown(db[sel])
-        layer = cand if layer is None else np.fmax(layer, cand)
-    if layer is None:
-        layer = np.full(db.shape[1:], np.nan)
-    return _mask_nan(cube, layer, lcz_classes)
+        if sel.sum() >= 2:
+            yield sel
 
 
-def _hotspot_with_timing(
+def _hotspot(
     cube: xr.Dataset, *, pol: str = "vv", start=None, end=None, direction: str = "both",
-    lcz_classes: Optional[Sequence[int]] = None,
+    lcz_classes: Optional[Sequence[int]] = None, with_timing: bool = False,
 ):
-    """Per-cell max drop (matching `hotspot_layer`) plus the bracketing pass dates
-    of that drop. Returns (magnitude, date_before, date_after); dates are the last
-    pre-drop and first post-drop passes of whichever orbit produced the cell's max.
+    """Per-cell max sustained drop (dB), reduced across matching relative orbits.
+
+    with_timing=True additionally returns the bracketing pass dates of each cell's
+    winning drop — the last pre-drop and first post-drop pass of whichever orbit
+    produced that maximum. Returns `magnitude`, or (magnitude, before, after).
     """
     db = _pol_db_cube(cube, pol)
-    tm = _time_mask(cube, start, end)
-    ro = np.asarray(cube["relative_orbit"].values)
-    state = np.asarray(cube["orbit_state"].values)
-    days = np.asarray(cube["time"].values).astype("datetime64[D]")
-
     shape = db.shape[1:]
-    nat = np.datetime64("NaT", "D")
     best = np.full(shape, np.nan)
+    if not with_timing:
+        for sel in _orbit_selections(cube, start, end, direction):
+            best = np.fmax(best, _max_stepdown(db[sel]))
+        return _mask_nan(cube, best, lcz_classes)
+
+    days = np.asarray(cube["time"].values).astype("datetime64[D]")
+    nat = np.datetime64("NaT", "D")
     before = np.full(shape, nat, dtype="datetime64[D]")
     after = np.full(shape, nat, dtype="datetime64[D]")
-
-    for ro_val in np.unique(ro):
-        sel = tm & (ro == ro_val)
-        if direction in ("ascending", "descending"):
-            sel = sel & (state == direction)
-        if sel.sum() < 2:
-            continue
+    for sel in _orbit_selections(cube, start, end, direction):
         d_sel = days[sel]
-        mag, k = _max_stepdown_k(db[sel])
+        mag, k = _max_stepdown(db[sel], with_index=True)
         kb = np.clip(k - 1, 0, d_sel.size - 1)
         ka = np.clip(k, 0, d_sel.size - 1)
         better = np.isfinite(mag) & (~np.isfinite(best) | (mag > best))
@@ -380,6 +363,13 @@ def _hotspot_with_timing(
 
     masked = _mask_nan(cube, best, lcz_classes)
     cleared = ~np.isfinite(masked)  # drop dates for cells the mask removed
-    before = np.where(cleared, nat, before)
-    after = np.where(cleared, nat, after)
-    return masked, before, after
+    return masked, np.where(cleared, nat, before), np.where(cleared, nat, after)
+
+
+def hotspot_layer(
+    cube: xr.Dataset, *, pol: str = "vv", start=None, end=None, direction: str = "both",
+    lcz_classes: Optional[Sequence[int]] = None,
+) -> np.ndarray:
+    """Per-cell max sustained drop (dB) over the range, max across matching orbits."""
+    return _hotspot(cube, pol=pol, start=start, end=end, direction=direction,
+                    lcz_classes=lcz_classes)
