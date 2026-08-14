@@ -374,11 +374,8 @@ The image runs `solara run … --host 0.0.0.0 --port 8765 --production`
 (`--production` disables the dev file-watcher, which has no business inside a
 container). Mount the cache so baked cubes survive container restarts.
 
-Note: the ignore file ships as `s1drops/dockerignore`, which Docker does **not**
-pick up — it looks for `.dockerignore` at the build-context root. Until it is
-renamed and moved, the build context includes `s1env/`, `cache/`, and any large
-local rasters. Copy it to `./.dockerignore` before building, or expect a very
-slow context upload.
+`.dockerignore` lives at the repository root — Docker only reads it there — and
+keeps `s1env/`, `cache/`, and large local rasters out of the build context.
 
 ## Tests
 

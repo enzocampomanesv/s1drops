@@ -1,0 +1,14 @@
+.git
+.pytest_cache/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Virtualenvs and large local geodata must never enter the build context.
+s1env/
+.venv/
+venv/
+cache/
+*.zarr/
+*.tif
+*.tiff

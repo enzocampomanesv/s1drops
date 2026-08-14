@@ -363,7 +363,7 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
                         pct = int(round(c["cloud"] * 100))
                         solara.FileDownload(
                             (lambda p=c["tif_path"]: open(p, "rb").read()),
-                            filename=(f"{_slug(cube_name)}_optical_{side}_"
+                            filename=(f"{cube_name}_optical_{side}_"
                                       f"{c['date']}_cloud{pct}pct.tif"),
                             label=f"Download {side} GeoTIFF ({c['date']})",
                         )

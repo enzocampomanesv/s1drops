@@ -33,8 +33,6 @@ LCZ_NAMES = {
     14: "Low plants", 15: "Bare rock/paved", 16: "Bare soil/sand", 17: "Water",
 }
 
-BUILT_CLASSES = tuple(range(1, 11))
-
 # Standard WUDAPT LCZ colours (hex) for the overlay.
 LCZ_HEX = {
     1: "#8c0000", 2: "#d10000", 3: "#ff0000", 4: "#bf4d00", 5: "#ff6600",

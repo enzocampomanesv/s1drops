@@ -17,10 +17,9 @@ import numpy as np
 import xarray as xr
 
 from ..analysis.detect import DetectionResult, detect
-from ..analysis.series import POLS, Series, extract_series, to_db
-from ..cube.lcz import DEFAULT_CLASSES, LCZ_NAMES, allowed_mask
+from ..analysis.series import Series, extract_series, to_db
+from ..cube.lcz import LCZ_NAMES, allowed_mask
 
-DIRECTION_STATES = {"ascending": "ascending", "descending": "descending"}
 DETECT_PAD = 2  # passes beyond the visible window for edge context
 
 

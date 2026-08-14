@@ -19,7 +19,7 @@ import time
 import numpy as np
 import odc.stac
 
-from s1drops.cube import proj_env  # noqa: F401  (applies PROJ fix on import)
+from s1drops import proj_env  # noqa: F401  (applies PROJ fix on import)
 from s1drops.cube.geobox import aoi_to_geobox
 from s1drops.cube.stac import open_catalog, search_items
 from odc.geo.geobox import GeoBox
