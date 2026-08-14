@@ -75,7 +75,22 @@ Two tabs: **Explore** (public — read-only analysis of already-baked cubes) and
 
 `run_s1drops_demo.bat` is a Windows convenience launcher: it refuses to start
 without an admin password set, waits for the port to accept connections, then
-opens a Cloudflare quick tunnel for sharing. Edit the two paths at the top first.
+opens a Cloudflare quick tunnel for sharing. It locates the repo and the venv
+from its own location, so there is nothing to edit — only `PORT`, if 8765 is
+taken. On startup it prints which copy of the package it imported.
+
+> **Editable installs pin an absolute path.** `pip install -e .` writes the
+> checkout's absolute path into the venv, so if you move or copy the project the
+> venv keeps importing the *old* location — silently, since the import still
+> succeeds. After relocating a checkout, re-run `pip install -e .` from the new
+> root. To see which copy is live:
+>
+> ```bash
+> python -c "import s1drops, os; print(os.path.dirname(s1drops.__file__))"
+> ```
+>
+> Note `pytest` masks this (it puts the repo root on `sys.path` first), so a
+> green test run is *not* evidence that the app is serving current code.
 
 ---
 
@@ -387,6 +402,17 @@ Fully offline — no network, no Planetary Computer access. STAC search, scene
 loading, and the S2 SCL/RGB readers are all injectable, so the geometry, cache
 keying, registry, merge, detection, cloud-ranking, and queue logic are tested
 against synthetic data. Solara components are exercised headlessly.
+
+Two suites are worth knowing about:
+
+- `test_dedup_invariants.py` pins the equivalences that let several near-identical
+  functions be merged behind a flag — both `_max_stepdown` branches agree
+  (NaNs included), `_hotspot(with_timing=True)` never alters the magnitudes
+  `hotspot_layer` returns, and the array and RGB overlay paths place identical
+  bounds. Edit one branch without the other and these fail.
+- `test_install_integrity.py` catches a stale editable install (see the warning
+  under [Run the app](#run-the-app)) and hard-coded paths in the launcher. It
+  skips when the package isn't installed editable.
 
 ---
 

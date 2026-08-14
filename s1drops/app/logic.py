@@ -289,13 +289,19 @@ def _max_stepdown(db: np.ndarray, *, with_index: bool = False):
     plain form keeps the cheaper `fmax` accumulation for the map redraw path.
     """
     t = db.shape[0]
+    best = np.full(db.shape[1:], np.nan)
+    best_k = np.zeros(db.shape[1:], dtype=int)
+    if t < 2:
+        # No split exists, so every cell is NaN regardless of the data. Returning
+        # here also keeps the function total for an empty time axis, where the
+        # cumulative sums below would have nothing to index.
+        return (best, best_k) if with_index else best
+
     valid = np.isfinite(db)
     filled = np.where(valid, db, 0.0)
     csum = np.cumsum(filled, axis=0)
     ccnt = np.cumsum(valid, axis=0)
     total, totcnt = csum[-1], ccnt[-1]
-    best = np.full(db.shape[1:], np.nan)
-    best_k = np.zeros(db.shape[1:], dtype=int)
     for k in range(1, t):
         pre_sum, pre_cnt = csum[k - 1], ccnt[k - 1]
         post_sum, post_cnt = total - pre_sum, totcnt - pre_cnt

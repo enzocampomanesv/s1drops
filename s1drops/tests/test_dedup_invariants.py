@@ -87,18 +87,32 @@ def test_max_stepdown_index_points_at_the_planted_drop():
 @pytest.mark.parametrize("db", [
     np.full((4, 3, 3), np.nan),          # nothing valid anywhere
     np.full((1, 3, 3), -8.0),            # single timestep: no split exists
-], ids=["all-nan", "single-step"])
+    np.zeros((0, 3, 3)),                 # empty time axis
+], ids=["all-nan", "single-step", "empty"])
 def test_max_stepdown_degenerate_inputs_agree_and_are_nan(db):
     plain = logic._max_stepdown(db)
     best, k = logic._max_stepdown(db, with_index=True)
     assert np.array_equal(plain, best, equal_nan=True)
+    assert plain.shape == db.shape[1:]
     assert np.isnan(plain).all()
     assert (k == 0).all()               # no split won, so the index stays at 0
 
 
+@pytest.mark.parametrize("t", [0, 1])
+def test_max_stepdown_is_total_for_unsplittable_stacks(t):
+    """t < 2 has no split to measure; it must return NaN rather than raise on the
+    cumulative-sum indexing."""
+    db = np.full((t, 4, 5), -8.0)
+    plain = logic._max_stepdown(db)
+    best, k = logic._max_stepdown(db, with_index=True)
+    assert plain.shape == best.shape == k.shape == (4, 5)
+    assert np.isnan(plain).all() and np.isnan(best).all()
+    assert k.dtype == np.zeros(1, dtype=int).dtype
+
+
 def test_orbit_selections_never_yields_an_empty_time_stack(cube):
-    """_max_stepdown indexes csum[-1], so it requires >=1 timestep. The >=2-pass
-    guard in _orbit_selections is what makes that safe; pin it here."""
+    """The >=2-pass guard is what keeps every hotspot reduction on a splittable
+    stack, so the degenerate branch above stays unreachable in practice."""
     for start, end in [(None, None), ("2024-02-01", "2024-04-15"),
                        ("2030-01-01", "2030-02-01")]:
         for direction in ("both", "ascending", "descending"):
