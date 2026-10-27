@@ -1,7 +1,6 @@
-# Always-on deployment: the s1drops app plus a Cloudflare named tunnel.
-#
-# The tunnel dials OUT to Cloudflare, so the server needs no inbound ports
-# (only SSH) and gets HTTPS on a fixed hostname for free. See deploy/README.md.
+# Always-on deployment: the s1drops app, published by Tailscale Funnel on the
+# host (free) or by an opt-in Cloudflare named tunnel. Both dial OUT, so the
+# server needs no inbound ports beyond SSH. See deploy/README.md.
 #
 #   cd deploy && cp .env.example .env   # then fill it in
 #   docker compose up -d --build
@@ -45,12 +44,16 @@ services:
       start_period: 60s
       retries: 3
 
+  # Opt-in: only for the Cloudflare named-tunnel route (needs a domain on
+  # Cloudflare). Enable with COMPOSE_PROFILES=cloudflare in deploy/.env.
+  # The free route uses Tailscale Funnel on the host instead - see README.
   tunnel:
+    profiles: ["cloudflare"]
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in deploy/.env}
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       app:
         condition: service_healthy

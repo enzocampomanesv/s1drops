@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# One-time setup for a fresh Ubuntu 22.04/24.04 VM. Run as a sudo-capable user:
+# One-time setup for a fresh Ubuntu 22.04/24.04 VM (x86 or Arm, e.g. Oracle
+# Always Free). Run as a sudo-capable user:
 #
 #   curl -fsSL https://raw.githubusercontent.com/enzocampomanesv/s1drops/v2/deploy/bootstrap-vm.sh | bash
 #   # or, after cloning:  bash deploy/bootstrap-vm.sh
 #
-# Installs Docker, opens only SSH in the firewall, creates the data directories,
+# Installs Docker and Tailscale, opens only SSH, creates the data directories,
 # and clones the repo to /opt/s1drops. Safe to re-run.
 set -euo pipefail
 
@@ -19,9 +20,17 @@ if ! command -v docker >/dev/null; then
   echo "Added $USER to the docker group - log out and back in before using docker without sudo."
 fi
 
-# The tunnel is outbound-only, so nothing but SSH needs to be reachable.
-sudo ufw allow OpenSSH
-sudo ufw --force enable
+# Publishing is outbound-only (Funnel or cloudflared), so nothing but SSH needs
+# to be reachable. Oracle's images already ship iptables rules that do exactly
+# that, and layering ufw on top of them is a known way to lose SSH - skip it there.
+if [ ! -f /etc/iptables/rules.v4 ]; then
+  sudo ufw allow OpenSSH
+  sudo ufw --force enable
+fi
+
+if ! command -v tailscale >/dev/null; then
+  curl -fsSL https://tailscale.com/install.sh | sh
+fi
 
 sudo mkdir -p "$DATA_DIR/cache" "$DATA_DIR/lcz"
 sudo chown -R "$USER":"$USER" "$DATA_DIR"
@@ -40,7 +49,9 @@ fi
 cat <<EOF
 
 Done. Next:
-  1. Fill in $APP_DIR/deploy/.env (admin password + tunnel token).
-  2. (optional) scp lcz_cog.tif to $DATA_DIR/lcz/ and set S1DROPS_LCZ_PATH in .env.
-  3. cd $APP_DIR/deploy && docker compose up -d --build
+  1. Set the admin password in $APP_DIR/deploy/.env.
+  2. cd $APP_DIR/deploy && docker compose up -d --build
+  3. sudo tailscale up --hostname s1drops      # open the printed login link
+     sudo tailscale funnel --bg 8765          # prints the public https URL
+  4. (optional) scp lcz_cog.tif to $DATA_DIR/lcz/ and set S1DROPS_LCZ_PATH in .env.
 EOF
