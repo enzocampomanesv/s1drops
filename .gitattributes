@@ -1,0 +1,2 @@
+# Shell scripts run on Linux VMs; keep them LF even when committed from Windows.
+*.sh text eol=lf

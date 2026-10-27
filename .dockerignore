@@ -12,3 +12,7 @@ cache/
 *.zarr/
 *.tif
 *.tiff
+
+# Secrets: COPY . . in the Dockerfile would otherwise bake deploy/.env into the image.
+.env
+**/.env

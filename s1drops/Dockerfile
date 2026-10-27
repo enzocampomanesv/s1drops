@@ -2,6 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# rasterio's wheel bundles GDAL but links against the system libexpat, which the
+# slim base image no longer ships ("ImportError: libexpat.so.1" otherwise).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install dependencies first, separately from app code.
 # This layer only gets invalidated when requirements.txt changes,
 # not on every source edit.
