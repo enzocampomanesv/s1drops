@@ -55,7 +55,7 @@ def Page():
     tour.Tour.element(steps=tour.steps_for(user), run=tour_run.value)
     with solara.AppBar():
         solara.Button("Tutorial", icon_name="mdi-help-circle-outline", text=True,
-                      dark=True, classes=["s1-tour-help"],
+                      dark=True, classes=["s1-tour-help", "s1-compact"],
                       style={"text-transform": "none"},
                       on_click=lambda: tour_run.set(tour_run.value + 1))
         UserMenu(user)
@@ -78,14 +78,17 @@ def UserMenu(user):
     signing in and out happen on the /auth pages, which set the cookie."""
     link = dict(text=True, dark=True, style_="text-transform:none")
     if user is None:
-        solara.v.Btn(href="/auth/login", children=[
+        solara.v.Btn(href="/auth/login", class_="s1-compact", children=[
             solara.v.Icon(left=True, children=["mdi-account-circle-outline"]), "Sign in"],
             **link)
         return
     with solara.Row(style={"align-items": "center", "background": "transparent"}, gap="0px"):
-        solara.v.Html(tag="span", style_="font-size:14px;margin-right:4px;white-space:nowrap",
+        solara.v.Html(tag="span", class_="s1-hide-phone",
+                      style_="font-size:14px;margin-right:4px;white-space:nowrap",
                       children=[f"{user.display} · {accounts.ROLE_LABELS[user.role]}"])
-        solara.v.Btn(href="/auth/logout", children=["Sign out"], **link)
+        solara.v.Btn(href="/auth/logout", class_="s1-compact", attributes={"title": "Sign out"},
+                     children=[solara.v.Icon(left=True, children=["mdi-logout"]), "Sign out"],
+                     **link)
 
 
 @solara.component

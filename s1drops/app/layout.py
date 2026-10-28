@@ -106,10 +106,30 @@ body:not(:has(.v-navigation-drawer--open:not(.v-navigation-drawer--is-mobile))) 
 body.s1-dragging { user-select: none; }
 body.s1-dragging .leaflet-container { pointer-events: none; }
 
+/* Phones and narrow tablets: one column in the order people work in: the map,
+   then the area, list and details of the picked change, then its photos and
+   verdict. The map column's own box is dissolved (display: contents) so its map
+   and its photo panel can sit on either side of the list. Solara sets the row
+   direction inline, hence !important. */
 @media (max-width: 960px) {
-    .s1-split { flex-direction: column; }
-    .s1-left { flex-basis: auto; }
-    .s1-vsplit { display: none; }
+    :root { --s1-map-h: 50vh; }
+    .s1-split { flex-direction: column !important; }
+    .s1-split > .s1-left.d-flex { display: contents !important; }  /* beats Vuetify's d-flex */
+    .s1-left > div:has(> .s1-map) { order: 0; }
+    .s1-right { order: 1; flex: 1 1 auto !important; width: 100%; }
+    .s1-left > *:not(:has(.s1-map)) { order: 2; width: 100%; }
+    .s1-vsplit, .s1-hsplit { display: none; }
+}
+/* Phones: icon-only buttons in the title bar, a shorter title, no name line. */
+@media (max-width: 600px) {
+    .v-app-bar .v-toolbar__title { font-size: 16px !important; }
+    .s1-compact .v-btn__content { font-size: 0 !important; }
+    .s1-compact .v-btn__content .v-icon { font-size: 22px !important; margin: 0 !important; }
+    .s1-compact.v-btn { min-width: 36px !important; padding: 0 6px !important; }
+    .s1-hide-phone { display: none !important; }
+    /* Strongest changes: drop the Area column and tighten the rest so Confidence fits. */
+    .s1-tour-cand .s1-col-area { display: none; }
+    .s1-tour-cand td, .s1-tour-cand th { padding: 0 6px !important; font-size: 13px !important; }
 }
 """
 

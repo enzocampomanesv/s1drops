@@ -52,6 +52,7 @@ def test_admin_login_renders(monkeypatch):
 def test_explore_renders_cube_and_picks_candidate(tmp_path, monkeypatch):
     import ipyvuetify as v
     import solara
+    from s1drops.app import confidence
     from s1drops.app.explore import Explore
     from s1drops.cube.cache import write_cube
     from s1drops.app import places
@@ -74,8 +75,11 @@ def test_explore_renders_cube_and_picks_candidate(tmp_path, monkeypatch):
     try:
         rows = rc.find(v.Html, tag="tr").widgets
         assert len(rows) == 2, len(rows)        # header + the one change area
-        place, date, area, drop = (td.children[0] for td in rows[1].children)
-        assert drop.startswith("−") and date.endswith("2024") and area == "4.0 ha"
+        place, date, area, drop, conf = rows[1].children
+        assert drop.children[0].startswith("−") and date.children[0].endswith("2024")
+        assert area.children[0] == "4.0 ha"
+        badge = conf.children[0]                    # confidence label, reasons on hover
+        assert badge.v_slots[0]["children"][0].children[0] in confidence.LEVELS
         rows[1].fire_event("click", {})
         md = " ".join(str(w.template) + str(w.data) for w in rc.find(v.VuetifyTemplate).widgets)
         assert "Selected area" in md and "4 pixels" in md

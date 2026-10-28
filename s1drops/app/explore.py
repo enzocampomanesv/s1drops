@@ -7,6 +7,7 @@ the filtered+padded view with a live plot, table, and CSV export.
 from __future__ import annotations
 
 import json
+import os
 import math
 import re
 import threading
@@ -31,8 +32,8 @@ from ..config import (
 )
 from ..cube import list_cubes, read_cube
 from ..cube.lcz import DEFAULT_CLASSES, LCZ_NAMES, LCZ_RGB
-from . import (accounts, findings, layout, logic, maputil, places, plots, render, state,
-               validation)
+from . import (accounts, confidence, findings, layout, logic, maputil, places, plots, render,
+               report, share, state, validation)
 
 # Plain-language UI label -> internal code. The first entry of each is the default.
 POL_OPTIONS = {"VV (recommended)": "vv", "VH": "vh", "VV − VH difference": "vv_vh"}
@@ -298,6 +299,55 @@ def InfoTip(text: str, left: bool = False):
         v_slots=[{"name": "activator", "variable": "info", "children": [btn]}],
         children=[solara.v.Card(children=[solara.v.CardText(
             children=[solara.Markdown(text)])])],
+    )
+
+
+@solara.component
+def Headline(areas, resolution, summaries=None, *, by_area=True, in_view=False):
+    """The totals behind the list, in one line: how many places, how much land,
+    how many too recent to confirm and (for approved users) confirmed demolitions."""
+    if not areas:
+        return
+    cell_ha = resolution * resolution / 10_000.0
+    ha = sum(c.get("area_ha", cell_ha) for c in areas)
+    recent = sum(1 for c in areas if c.get("recent"))
+    noun = "place" if by_area else "pixel"
+    parts = [f"**{len(areas)} {noun}{'s' if len(areas) != 1 else ''}** with a lasting drop"
+             + (" in this map area" if in_view else ""),
+             f"**{_ha(ha)}** in total"]
+    if recent:
+        parts.append(f"{recent} too recent to confirm")
+    if summaries is not None:
+        confirmed = sum(1 for sm in summaries.values() if sm.verdict == "demolition")
+        parts.append(f"{confirmed} confirmed demolition{'s' if confirmed != 1 else ''}")
+    with solara.Row(style={"align-items": "center"}, gap="2px"):
+        solara.Markdown(" · ".join(parts), style={"font-size": "14px"})
+        InfoTip("Totals for everything found with the current settings, not only the "
+                "rows listed. Land is the area of the changed pixels. Confirmed "
+                "demolitions are places a validator marked as demolition (and no "
+                "reviewer vetoed).")
+
+
+@solara.component
+def ConfidenceBadge(rating, prefix=""):
+    """How sure we are, as a coloured label; hover or tap it for the four reasons."""
+    pill = solara.v.Html(
+        tag="span", v_on="why.on", children=[prefix + rating.label],
+        style_=f"display:inline-block;padding:0 8px;border-radius:9px;font-size:0.8em;"
+               f"line-height:1.7;white-space:nowrap;color:#fff;cursor:help;"
+               f"background:{rating.colour}")
+    rows = [solara.v.Html(tag="div", style_="font-weight:600;margin-bottom:4px",
+                          children=[f"Confidence: {rating.label}"])]
+    for f in rating.factors:
+        rows.append(solara.v.Html(tag="div", style_="margin:2px 0", children=[
+            solara.v.Html(tag="span", children=[confidence.MARKS[f.level]],
+                          style_="display:inline-block;width:16px;font-weight:600"),
+            solara.v.Html(tag="b", children=[f.name + ": "]), f.text]))
+    return solara.v.Menu(
+        open_on_hover=True, close_on_content_click=False, offset_y=True, max_width=360,
+        z_index=2000,
+        v_slots=[{"name": "activator", "variable": "why", "children": [pill]}],
+        children=[solara.v.Card(children=[solara.v.CardText(children=rows)])],
     )
 
 
@@ -695,7 +745,7 @@ def _photo_options(results, min_change: float) -> List[Dict]:
 @solara.component
 def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
                  default_start, default_end, footprint, min_change,
-                 picked=None, records=(), user=None):
+                 picked=None, records=(), user=None, photos=None):
     """Fetch + show Sentinel-2 before/after imagery for a drop (on demand), and ask
     for a verdict on it underneath (`picked`: the listed change being looked at)."""
     mode = solara.use_reactive("cell")          # "cell" | "manual"
@@ -704,13 +754,14 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
     man_after = solara.use_reactive(default_end)
     running = solara.use_reactive(False)
     status = solara.use_reactive([])
-    result = solara.use_reactive(None)
     error = solara.use_reactive("")
     result_open = solara.use_reactive(True)
     cloud_pct = solara.use_reactive(int(round(s2_cloud_thresh() * 100)))
     win_days = solara.use_reactive(int(s2_window_days()))
-    before_idx = solara.use_reactive(0)          # which candidate scene is shown
-    after_idx = solara.use_reactive(0)
+    # The fetched photos and which scene of each side is shown. Held by the caller
+    # when given (`photos`), so the PDF report can include what's on screen.
+    own = (solara.use_reactive(None), solara.use_reactive(0), solara.use_reactive(0))
+    result, before_idx, after_idx = photos or own
 
     opts = _photo_options(results, min_change)
     labels = [o["label"] for o in opts]
@@ -884,14 +935,17 @@ def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
 
 
 _TH = "cursor:pointer;user-select:none;white-space:nowrap"
+# Sorting by confidence: settled and likely changes first, ruled out last.
+CONFIDENCE_ORDER = {"Confirmed": 7, "High": 6, "Disputed": 5, "Medium": 4, "Other change": 3,
+                    "Low": 2, "Too early": 1, "Ruled out": 0}
 
 
 @solara.component
-def SortHeader(label, key, sort):
+def SortHeader(label, key, sort, classes=""):
     """Clickable column header: first click sorts descending, the next flips it."""
     col, desc = sort.value
     arrow = (" ▼" if desc else " ▲") if col == key else ""
-    th = solara.v.Html(tag="th", children=[label + arrow], style_=_TH)
+    th = solara.v.Html(tag="th", children=[label + arrow], style_=_TH, class_=classes)
     solara.v.use_event(th, "click",
                        lambda *_: sort.set((key, not desc if col == key else True)))
     return th
@@ -949,20 +1003,19 @@ def _verdict_chips(summary) -> list:
 
 
 @solara.component
-def CandidateRow(c, names, on_pick, selected, summary=None):
+def CandidateRow(c, names, on_pick, selected, summary=None, rating=None):
     """One table row; clicking anywhere on it selects the site and flies there."""
     bg = "background:rgba(255,152,0,0.22);" if selected else ""   # reads in both themes
-    when = [_day(c["date_after"])]
-    if c.get("recent"):
-        when += [solara.v.Html(tag="br"), solara.v.Html(
-            tag="span", children=["too recent to confirm"],
-            style_="font-size:0.8em;opacity:0.7;white-space:nowrap")]
+    # Verdicts show through the confidence label; only the admins' reference
+    # match keeps its own chip.
+    ref = [_chip("ref", "#455a64", "Matches your reference demolitions (visible to "
+                                   "admins only)")] if summary and summary.reference else []
     cells = [
-        solara.v.Html(tag="td", children=[_place_text(c, names), *_verdict_chips(summary)]),
-        solara.v.Html(tag="td", children=when, style_="white-space:nowrap"),
+        solara.v.Html(tag="td", children=[_place_text(c, names), *ref]),
+        solara.v.Html(tag="td", children=[_day(c["date_after"])], style_="white-space:nowrap"),
     ]
     if "area_ha" in c:
-        cells.append(solara.v.Html(tag="td", children=[_ha(c["area_ha"])],
+        cells.append(solara.v.Html(tag="td", children=[_ha(c["area_ha"])], class_="s1-col-area",
                                    style_="white-space:nowrap;text-align:right"))
     drop = [f"−{c['drop_db']:.1f}"]
     tip = ""
@@ -973,6 +1026,8 @@ def CandidateRow(c, names, on_pick, selected, summary=None):
                f"−{c['avg_drop_db']:.1f} dB.")
     cells.append(solara.v.Html(tag="td", children=drop, attributes={"title": tip},
                                style_="font-weight:600;text-align:right;white-space:nowrap"))
+    cells.append(solara.v.Html(tag="td", children=[ConfidenceBadge(rating)] if rating else [],
+                               style_="text-align:center"))
     tr = solara.v.Html(tag="tr", style_=f"cursor:pointer;{bg}", children=cells)
     solara.v.use_event(tr, "click", lambda *_: on_pick(c))
     return tr
@@ -980,7 +1035,7 @@ def CandidateRow(c, names, on_pick, selected, summary=None):
 
 @solara.component
 def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
-                   min_area_ha=0.0, in_view=False, summaries=None):
+                   min_area_ha=0.0, in_view=False, summaries=None, ratings=None):
     """Strongest changes as a sortable table of place, date, (area) and drop.
 
     by_area lists change areas (largest first); otherwise single pixels (strongest
@@ -1029,6 +1084,9 @@ def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
     keyf = {
         "area": lambda c: (c.get("area_ha", 0.0), c["drop_db"]),
         "date": lambda c: c["date_after"] or "",
+        "confidence": lambda c: (CONFIDENCE_ORDER.get(
+            (ratings or {}).get(c["rank"]).label if (ratings or {}).get(c["rank"]) else "", 0),
+            c["drop_db"]),
     }.get(col, lambda c: c["drop_db"])
     shown = sorted(candidates, key=keyf, reverse=desc)
     if col == "area":    # unconfirmed areas stay under the confirmed ones either way
@@ -1040,12 +1098,14 @@ def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
                 solara.v.Html(tag="th", children=["Place"])
                 SortHeader("Date", "date", sort)
                 if by_area:
-                    SortHeader("Area", "area", sort)
+                    SortHeader("Area", "area", sort, classes="s1-col-area")
                 SortHeader("Drop (dB)", "drop", sort)
+                SortHeader("Confidence", "confidence", sort)
         with solara.v.Html(tag="tbody"):
             for c in shown:
                 CandidateRow(c, names.value, on_pick, selected_rank == c["rank"],
-                             (summaries or {}).get(c["rank"])).key(f"cand-{c['rank']}")
+                             (summaries or {}).get(c["rank"]),
+                             (ratings or {}).get(c["rank"])).key(f"cand-{c['rank']}")
     solara.Text("Place names © OpenStreetMap contributors",
                 style={"font-size": "0.75em", "opacity": "0.6"})
     if not more.value:
@@ -1195,6 +1255,8 @@ def Explore(cache_dir: str = "./cache"):
     min_change_pending = solara.use_reactive(DEFAULT_MIN_CHANGE)  # live slider value
     neighborhood = solara.use_reactive(True)        # 3x3 neighborhood detection (10 m only)
     optical_footprint = solara.use_reactive(None)    # optical AOI box drawn on the main map
+    photos = (solara.use_reactive(None), solara.use_reactive(0),    # fetched photos and
+              solara.use_reactive(0))                                # the scenes shown
     plot_open = solara.use_reactive(True)            # right-panel collapse states
     drops_open = solara.use_reactive(True)
     cand_open = solara.use_reactive(True)
@@ -1235,6 +1297,33 @@ def Explore(cache_dir: str = "./cache"):
     solara.use_effect(_reset_range, [active, n])
     # A searched map area belongs to the cube it was drawn on.
     solara.use_effect(lambda: search_box.set(None), [active])
+
+    # A shared link (?area=…&at=…): switch to its area, then, once that area's
+    # dates are known, set its period and select the change. Declared after the
+    # effects above so it overrides their defaults.
+    router = solara.use_router()
+    pending = solara.use_reactive(solara.use_memo(lambda: share.parse(router.search), []))
+
+    def _open_shared():
+        link = pending.value
+        if not link:
+            return
+        if link["area"] not in keys:
+            pending.set(None)
+            return
+        if active != link["area"]:
+            cube_key.set(link["area"])
+            return
+        if not n:
+            return
+        rng = share.date_range(dates, link.get("from"), link.get("to"))
+        if rng:
+            date_idx.set(rng)
+        if "lat" in link:
+            clicked.set((link["lat"], link["lon"]))
+            focus.set((link["lat"], link["lon"], 16))
+        pending.set(None)
+    solara.use_effect(_open_shared, [active, n, tuple(keys)])
 
     lo, hi = date_idx.value
     if n:
@@ -1292,6 +1381,28 @@ def Explore(cache_dir: str = "./cache"):
         lambda: validation.for_cube(cube, user) if cube is not None else [],
         [active, user and (user.id, user.role), state.validation_version.value,
          state.registry_version.value])
+    summaries = solara.use_memo(
+        lambda: ({c["rank"]: sm for c in areas if (sm := validation.summarise(records, c))}
+                 if records else {}),
+        [id(areas), id(records)])
+
+    # How sure we are about each listed change. Track agreement needs the detector
+    # run on each row's own series (as the chart does), so only for the rows on show.
+    det_method = METHOD_OPTIONS[method_label.value]
+    det_params = (dict(sensitivity=sensitivity.value, min_drop_db=min_change.value)
+                  if det_method == "pelt" else
+                  dict(window=window.value, min_drop_db=min_change.value))
+    n_rows = 30 if cand_more.value else 10
+    tracks = solara.use_memo(
+        lambda: ({c["rank"]: confidence.tracks_for(
+            cube, c, pol=POL_OPTIONS[pol_label.value], orbit_dir=ORBIT_OPTIONS[orbit_label.value],
+            start=start, end=end, method=det_method, params=det_params)
+            for c in candidates[:n_rows]} if cube is not None else {}),
+        [id(areas), det_method, str(det_params), n_rows])
+    show_verdicts = user is not None and user.approved
+    ratings = {c["rank"]: confidence.rate(c, min_change.value, tracks.get(c["rank"]),
+                                          summaries.get(c["rank"]), show_verdicts)
+               for c in candidates[:n_rows]}
 
     # --- guards (after all hooks) ---
     if not cubes:
@@ -1474,7 +1585,7 @@ def Explore(cache_dir: str = "./cache"):
                          default_start=start, default_end=end,
                          footprint=optical_footprint,
                          min_change=min_change.value, picked=picked, records=records,
-                         user=user).key("optical-panel")
+                         user=user, photos=photos).key("optical-panel")
         layout.drag_handle("--s1-mapcol")
         with solara.Column(classes=["s1-right"]):
             # Every direct child is keyed so collapsing a section (which changes the
@@ -1497,16 +1608,18 @@ def Explore(cache_dir: str = "./cache"):
                 # Until something is picked, a soft glow says "start here".
                 cand_cls = ["s1-tour-cand"] + (["s1-nudge"] if cell is None else [])
                 with solara.Column(gap="0px", classes=cand_cls).key("body-cand"):
+                    Headline(areas, resolution, summaries if show_verdicts else None,
+                             by_area=not by_pixel.value, in_view=bool(search_box.value))
                     ViewSearch(search_box, map_view.value)
-                    shown = candidates[:30 if cand_more.value else 10]
-                    summaries = {c["rank"]: sm for c in shown
-                                 if (sm := validation.summarise(records, c))} if records else {}
+                    shown = candidates[:n_rows]
                     CandidateTable(shown, pick_candidate, selected_rank, cand_more, cache_dir,
                                    by_area=not by_pixel.value, min_area_ha=min_area.value,
-                                   in_view=bool(search_box.value), summaries=summaries)
+                                   in_view=bool(search_box.value), summaries=summaries,
+                                   ratings=ratings)
                     if user is not None and user.is_admin and any(
                             r.source == "reference" for r in records) and shown:
-                        hits = sum(1 for sm in summaries.values() if sm.reference)
+                        hits = sum(1 for c in shown
+                                   if (sm := summaries.get(c["rank"])) and sm.reference)
                         solara.v.Html(tag="div", style_="font-size:13px;opacity:0.85", children=[
                             _chip("ref", "#455a64"),
                             f" Reference check: {hits} of these {len(shown)} match your "
@@ -1527,22 +1640,52 @@ def Explore(cache_dir: str = "./cache"):
                 what = (f"**Selected area** ({_ha(area['area_ha'])}, {area['n_cells']} "
                         f"pixels, outlined on the map)" if area else "**Selected location**")
                 solara.Markdown(
-                    f"{what}: " + (f"{place} · " if place else "")
-                    + f"{lat_c:.5f}, {lon_c:.5f}"
+                    f"{what}: " + (place or f"{lat_c:.5f}, {lon_c:.5f}")
                     + (f" · {cell_lcz.split(' ', 1)[1]}" if cell_lcz else "")
                     + f" · [open in Google Maps]({gmaps})"
                 ).key("sel-loc")
-                sel_summary = validation.summarise(records, picked) if (records and picked)                     else None
-                if sel_summary:
-                    solara.v.Html(tag="div", style_="font-size:14px;margin:-8px 0 4px",
-                                  children=["Validation:", *_verdict_chips(sel_summary)]
-                                  ).key("sel-verdict")
-                if area and area["recent"]:
-                    solara.Warning(
-                        f"Too recent to confirm: only {area['passes_after']} image"
-                        f"{'s' if area['passes_after'] != 1 else ''} per satellite track "
-                        "after this drop. Check again later, or compare satellite photos."
-                    ).key("recent-note")
+                # How sure we are, with the reasons on hover; the same label as the
+                # list, or worked out here for a spot that isn't listed.
+                sel_rating = ratings.get(picked["rank"]) if picked else None
+                if sel_rating is None and picked is not None:
+                    sel_rating = confidence.rate(
+                        picked, min_change.value,
+                        confidence.track_agreement(results, picked.get("date_after")),
+                        summaries.get(picked["rank"]) or validation.summarise(records, picked),
+                        show_verdicts)
+                with solara.Row(style={"align-items": "center", "flex-wrap": "wrap",
+                                       "margin": "-8px 0 4px"}, gap="8px").key("sel-actions"):
+                    if sel_rating is not None:
+                        ConfidenceBadge(sel_rating, prefix="Confidence: ")
+                    query = share.query(active, picked or {"lat": lat_c, "lon": lon_c},
+                                        start, end, dates)
+                    share.CopyLink.element(query=query)
+                    if picked is not None and sel_rating is not None:
+                        def _report(c=picked, rating=sel_rating, query=query):
+                            got, bi, ai = (r.value for r in photos)
+                            mine = got and got.get("cell") == str(cell)
+                            public = os.environ.get("S1DROPS_PUBLIC_URL", "").rstrip("/")
+                            return report.build(
+                                place=place or "", area_name=next((k for k, v in cube_labels.items()
+                                                       if v == active), active),
+                                c=c, rating=rating, events=events,
+                                signal=findings.relative_signal(results, events),
+                                min_change=min_change.value, cube=cube, mag=hot[0],
+                                resolution=resolution,
+                                land_use=cell_lcz.split(" ", 1)[1] if cell_lcz else "",
+                                link=f"{public}/?{query}" if public else "",
+                                photos=dict(got, before_idx=bi, after_idx=ai) if mine else None,
+                                verdicts=(validation.matching(records, c)
+                                          if show_verdicts else ()))
+                        solara.FileDownload(
+                            _report, label="Report (PDF)",
+                            filename=f"{cube_name}_change_{_slug(place or 'site')}_"
+                                     f"{(picked.get('date_after') or '')[:7]}.pdf",
+                            icon_name="mdi-file-pdf-box",
+                            children=[solara.Button("Report (PDF)", icon_name="mdi-file-pdf-box",
+                                                    text=True, small=True,
+                                                    style={"text-transform": "none",
+                                                           "letter-spacing": "0"})])
                 if per_track.value:
                     chart_info = (
                         "Backscatter in dB, one line per satellite track. Shaded bands "
