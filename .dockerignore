@@ -25,3 +25,8 @@ cache/
 *secret*
 *.key
 *.pem
+
+# Accounts and verdicts database.
+*.db
+*.db-wal
+*.db-shm

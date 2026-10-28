@@ -25,8 +25,9 @@ RUN pip install --no-cache-dir -e .
 # Real publishing happens via `-p` at `docker run` time.
 EXPOSE 8765
 
+# Serves Solara plus the /auth sign-in pages (s1drops/app/server.py), in
+# Solara's production mode (its default outside `solara run`).
 # --host 0.0.0.0: bind to all interfaces inside the container, not just
 #   localhost, or the -p port mapping has nothing to forward to.
-# --production: disables the dev file-watcher/auto-restart, which has
-#   no business running inside a container.
-CMD ["solara", "run", "s1drops.app.main", "--host", "0.0.0.0", "--port", "8765", "--production"]
+# --proxy-headers: trust X-Forwarded-* from FORWARDED_ALLOW_IPS (compose).
+CMD ["uvicorn", "s1drops.app.server:app", "--host", "0.0.0.0", "--port", "8765", "--proxy-headers"]

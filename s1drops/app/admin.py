@@ -17,7 +17,7 @@ from ..cube import delete_cube, list_cubes
 from ..cube.geobox import aoi_to_geobox, geom_from_geojson
 from ..cube.lcz import lcz_status
 from ..config import est_passes_per_year, native10_max_km2
-from . import auth, bakequeue, maputil, state
+from . import admin_users, auth, bakequeue, maputil, state
 
 REDUCTIONS = ["native_median", "overview_med"]
 # Plain-language AOI source label -> internal mode.
@@ -322,13 +322,29 @@ def ManageCubes(cache_dir: str):
 
 @solara.component
 def Admin(cache_dir: str = "./cache"):
+    user = state.user.value
+    account_admin = user is not None and user.is_admin
     if not state.is_admin.value:
+        if user is None:
+            solara.Markdown("[Sign in](/auth/login) with an admin account, or use the "
+                            "shared admin password below.")
         Login()
         return
     with solara.Column():
         with solara.Row(style={"justify-content": "space-between"}):
-            solara.Markdown("**Admin** — signed in")
-            solara.Button("Sign out", on_click=lambda: state.is_admin.set(False), text=True)
+            solara.Markdown(f"**Admin** — signed in as {user.display}" if account_admin
+                            else "**Admin** — signed in with the shared password")
+            if not account_admin:
+                solara.Button("Sign out", on_click=lambda: state.is_admin.set(False),
+                              text=True)
         BuildForm(cache_dir)
         solara.Markdown("---")
         ManageCubes(cache_dir)
+        solara.Markdown("---")
+        if account_admin:
+            admin_users.ManageUsers()
+            solara.Markdown("---")
+            admin_users.ReferenceData()
+        else:
+            solara.Info("Accounts and reference data are managed by signed-in admin "
+                        "accounts. Add your email to S1DROPS_ADMIN_EMAILS and sign in.")

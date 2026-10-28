@@ -124,7 +124,20 @@ cubes are on disk and unaffected.
 
 ## 5. Backups
 
-Only `/srv/s1drops/cache` holds state. All of it can be rebuilt from Planetary
+**The accounts and verdicts database (`/srv/s1drops/db/app.db`) cannot be
+rebuilt: back it up.** `backup-db.sh` copies it safely while the app runs and
+keeps the last 30 days in `/srv/s1drops/db-backups`. Install it once:
+
+```bash
+(crontab -l 2>/dev/null; echo "15 3 * * * bash /opt/s1drops/deploy/backup-db.sh") | crontab -
+bash /opt/s1drops/deploy/backup-db.sh && ls /srv/s1drops/db-backups   # test: lists app-<date>.db
+```
+
+Keep a copy off the VM too, e.g. from your laptop:
+`scp ubuntu@<vm-public-ip>:/srv/s1drops/db-backups/app-$(date +%F).db .`
+The file holds names, emails and verdicts: store it somewhere private.
+
+The cube cache (`/srv/s1drops/cache`) can all be rebuilt from Planetary
 Computer, but a long bake is slow. Oracle's Always Free tier includes 5 volume
 backups (Block Storage → Boot Volumes → Create backup), or archive the cache:
 
@@ -134,11 +147,87 @@ tar -C /srv/s1drops -czf s1drops-cache-$(date +%F).tgz cache
 
 If you lose `registry.json`, run `rescan` to rebuild it from the zarr stores.
 
+## 6. Accounts and Google sign-in
+
+Browsing needs no account. Accounts are for validating detected changes:
+
+| Role | Can |
+| --- | --- |
+| Waiting for approval | Sign in; nothing else until an admin sets a role |
+| Validator | Record verdicts and see everyone's |
+| Reviewer | Validator, plus veto any verdict and download all verdicts |
+| Admin | Reviewer, plus manage accounts, bake cubes and import reference data |
+
+People get an account in one of three ways:
+
+- **Invite link** (Admin tab → Accounts → Invite someone): you choose the email
+  and role and get a one-time link, valid 7 days. Send it yourself (there is no
+  email server); they set a password or use Google with that same email.
+- **Request** (`/auth/signup`, linked from Sign in): anyone can ask. The account
+  waits for approval until you set its role in Admin → Accounts.
+- **Google sign-in**: same as a request (waits for approval) unless the email
+  has an invite or is in `S1DROPS_ADMIN_EMAILS`.
+
+Forgotten passwords: Admin → Accounts → **Reset link** next to the person, and
+send them the link (valid 2 days). Switching someone to **Disabled** signs them
+out at once. Their verdicts stay on record.
+
+### First admin
+
+In `deploy/.env` set your own email and the public address, then redeploy:
+
+```bash
+S1DROPS_ADMIN_EMAILS=you@example.org
+S1DROPS_PUBLIC_URL=https://<your-funnel-name>.ts.net
+```
+
+```bash
+cd /opt/s1drops/deploy && docker compose up -d
+```
+
+Open the site, click **Sign in** (top right) → **Request one**, and sign up with
+that email (or use Google once it is set up). You land back on the map with
+"<your name> · Admin" in the top bar, and the Admin tab opens without the
+shared password. The shared `S1DROPS_ADMIN_PASSWORD` keeps working as a fallback.
+
+### Turning on Google sign-in
+
+1. Go to <https://console.cloud.google.com/>, sign in, and create a project
+   (top bar → project picker → **New project**, any name, e.g. `s1drops`).
+2. **APIs & Services → OAuth consent screen** (Google may call it **Google Auth
+   Platform → Branding**). Choose **External**, app name "Rapid change detection
+   tool", your email as support and developer contact. Scopes: none to add (the
+   app only asks for name and email). Save.
+3. Under **Audience**, press **Publish app** so anyone with a Google account can
+   sign in. (In "Testing" mode only the test users you list can.)
+4. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+   Type **Web application**. Under **Authorized redirect URIs** add exactly:
+   `https://<your-funnel-name>.ts.net/auth/google/callback`
+   (and `http://localhost:8765/auth/google/callback` if you test locally).
+   Create. Google shows a **Client ID** and **Client secret**.
+5. Put them in `deploy/.env` on the VM:
+   ```bash
+   GOOGLE_CLIENT_ID=1234...apps.googleusercontent.com
+   GOOGLE_CLIENT_SECRET=GOCSPX-...
+   ```
+6. `cd /opt/s1drops/deploy && docker compose up -d`.
+7. Check: the Sign in page now shows **Sign in with Google**. If Google says
+   `redirect_uri_mismatch`, the URI in step 4 and `S1DROPS_PUBLIC_URL` must match
+   exactly (https, no trailing slash, same host).
+
+### Reference demolitions
+
+Admin → Reference demolitions: drop a GeoJSON of known demolition polygons
+(lon/lat) with a year field (`demo_year` by default). Only admins ever see
+them: a "ref" badge in Strongest changes and a reference check under the list.
+They are never drawn on the map, shown to other roles or exported.
+
 ## Security notes
 
-- Funnel makes the app **public**. The Admin tab sits on the same URL as
-  Explore, protected only by `S1DROPS_ADMIN_PASSWORD`, and nothing limits login
-  attempts, so use a long random password.
+- Funnel makes the app **public**. Sign-in and verdicts are protected by
+  accounts (passwords are scrypt-hashed; sessions are HttpOnly cookies; 5 wrong
+  passwords lock an email for 15 minutes). The shared `S1DROPS_ADMIN_PASSWORD`
+  still opens the cube tools in the Admin tab, so keep it long and random.
 - For a known team only, use `sudo tailscale serve --bg 8765` instead of
   `funnel`. The app is then reachable only by people you invite to your tailnet
   (free for up to 3 users; each installs Tailscale on their device).

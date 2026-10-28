@@ -61,3 +61,8 @@ desktop.ini
 *secret*
 *.key
 *.pem
+
+# Accounts and verdicts database (S1DROPS_DB_PATH): never commit or bake into images.
+*.db
+*.db-wal
+*.db-shm

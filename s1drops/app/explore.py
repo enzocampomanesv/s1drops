@@ -6,6 +6,7 @@ the filtered+padded view with a live plot, table, and CSV export.
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import threading
@@ -30,7 +31,8 @@ from ..config import (
 )
 from ..cube import list_cubes, read_cube
 from ..cube.lcz import DEFAULT_CLASSES, LCZ_NAMES, LCZ_RGB
-from . import findings, layout, logic, maputil, places, plots, render, state
+from . import (accounts, findings, layout, logic, maputil, places, plots, render, state,
+               validation)
 
 # Plain-language UI label -> internal code. The first entry of each is the default.
 POL_OPTIONS = {"VV (recommended)": "vv", "VH": "vh", "VV − VH difference": "vv_vh"}
@@ -116,7 +118,7 @@ def _fit_zoom(bounds, viewport_px: int = 340) -> int:
 @solara.component
 def CubeMap(overlay_url, bounds, on_click, highlight: Optional[Tuple[float, float]],
             height: str = "80vh", footprint=None, legend_html: str = "", focus=None,
-            outline=None, on_view=None, search_box=None):
+            outline=None, on_view=None, search_box=None, validated=None):
     map_el = ipyleaflet.Map.element(
         scroll_wheel_zoom=True, layout=Layout(height=height, width="100%"),
     )
@@ -177,15 +179,27 @@ def CubeMap(overlay_url, bounds, on_click, highlight: Optional[Tuple[float, floa
     solara.use_effect(update_footprint, [str(footprint)])
 
     def update_outline():
-        # The selected change area's outline is the map's only GeoJSON layer.
         m = solara.get_widget(map_el)
         for lyr in list(m.layers):
-            if isinstance(lyr, ipyleaflet.GeoJSON):
+            if getattr(lyr, "name", "") == "Selected area":
                 m.remove(lyr)
         if outline:
             m.add(ipyleaflet.GeoJSON(data=outline, name="Selected area", style={
                 "color": "#00e5ff", "weight": 3, "fill": False}))
     solara.use_effect(update_outline, [str(outline)])
+
+    def update_validated():
+        # Places with a verdict, outlined in the verdict's colour (signed-in only).
+        m = solara.get_widget(map_el)
+        for lyr in list(m.layers):
+            if getattr(lyr, "name", "") == "Verdicts":
+                m.remove(lyr)
+        if validated and validated["features"]:
+            m.add(ipyleaflet.GeoJSON(
+                data=validated, name="Verdicts",
+                style={"weight": 2, "fill": False, "dashArray": "4 3", "opacity": 0.9},
+                style_callback=lambda f: {"color": f["properties"]["colour"]}))
+    solara.use_effect(update_validated, [str(validated)])
 
     def update_search_box():
         # The map area Strongest changes was computed for, when limited to a view.
@@ -428,6 +442,173 @@ def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx):
     solara.use_effect(lambda: swap(m2, after, after_idx), [after_idx.value])
 
 
+def _when(ts: float) -> str:
+    return pd.Timestamp(ts, unit="s").strftime("%d %b %Y")
+
+
+@solara.component
+def VerdictItem(rec, user, on_change):
+    """One recorded verdict; reviewers and admins can veto it or undo a veto."""
+    vetoing = solara.use_reactive(False)
+    reason = solara.use_reactive("")
+    error = solara.use_reactive("")
+    vetoed = rec.status == "vetoed"
+    head = solara.v.Html(tag="div", children=[
+        solara.v.Html(tag="b", children=[validation.VERDICTS[rec.verdict]],
+                      style_="text-decoration:line-through" if vetoed else ""),
+        f" · {rec.user_name} · {_when(rec.created_at)}"
+        + (f" · {rec.confidence} confidence" if rec.confidence else "")])
+    lines = [head]
+    if rec.evidence:
+        lines.append(solara.v.Html(tag="div", style_="opacity:0.8", children=[
+            "Evidence: " + ", ".join(validation.EVIDENCE[e] for e in rec.evidence)]))
+    if rec.event_date:
+        lines.append(solara.v.Html(tag="div", style_="opacity:0.8",
+                                   children=[f"When: {rec.event_date}"]))
+    if rec.note:     # plain text, never rendered as markup
+        lines.append(solara.v.Html(tag="div", style_="white-space:pre-wrap",
+                                   children=[rec.note]))
+    if rec.link:
+        lines.append(solara.v.Html(tag="a", children=[rec.link], attributes={
+            "href": rec.link, "target": "_blank", "rel": "noopener noreferrer nofollow"},
+            style_="word-break:break-all"))
+    if vetoed:
+        lines.append(solara.v.Html(tag="div", style_="color:#e57373", children=[
+            f"Vetoed by {rec.vetoed_by_name}" + (f": {rec.veto_reason}"
+                                                  if rec.veto_reason else "")]))
+
+    def do(action):
+        try:
+            action()
+            error.set("")
+            vetoing.set(False)
+            on_change()
+        except (accounts.NotAllowed, ValueError) as e:
+            error.set(str(e))
+
+    with solara.Column(gap="2px", style={"padding": "8px 0",
+                                         "border-bottom": "1px solid rgba(128,128,128,.25)"}):
+        solara.v.Html(tag="div", children=lines, style_="font-size:14px")
+        if user.can_review:
+            if vetoed:
+                solara.Button("Undo veto", text=True, small=True,
+                              on_click=lambda: do(lambda: validation.undo_veto(user, rec.id)))
+            elif not vetoing.value:
+                solara.Button("Veto", text=True, small=True, color="error",
+                              on_click=lambda: vetoing.set(True))
+            else:
+                solara.InputText("Why are you vetoing this? (shown with it)", value=reason)
+                with solara.Row():
+                    solara.Button("Confirm veto", color="error", small=True,
+                                  on_click=lambda: do(lambda: validation.veto(
+                                      user, rec.id, reason.value)))
+                    solara.Button("Cancel", text=True, small=True,
+                                  on_click=lambda: vetoing.set(False))
+        if error.value:
+            solara.Error(error.value)
+
+
+@solara.component
+def ValidationPanel(cube, cube_key, picked, records, user):
+    """Verdicts on the selected change and the form to add one (approved users)."""
+    verdict = solara.use_reactive("")
+    evidence = solara.use_reactive([])
+    link = solara.use_reactive("")
+    event_date = solara.use_reactive("")
+    confidence = solara.use_reactive("")
+    note = solara.use_reactive("")
+    message = solara.use_reactive(("", ""))      # (kind, text)
+
+    def _reset():
+        for r, v in ((verdict, ""), (evidence, []), (link, ""), (event_date, ""),
+                     (confidence, ""), (note, ""), (message, ("", ""))):
+            r.set(v)
+    solara.use_effect(_reset, [picked and picked["rank"], cube_key])
+
+    if user is None:
+        solara.v.Html(tag="div", style_="opacity:0.8", children=[
+            solara.v.Html(tag="a", attributes={"href": "/auth/login"}, children=["Sign in"]),
+            " to see verdicts on this change or add one."])
+        return
+    if not user.approved:
+        solara.Info("Your account is waiting for an admin's approval. You'll be able to "
+                    "see and add verdicts once it's approved.")
+        return
+    if picked is None:
+        solara.Markdown("_Pick a change from Strongest changes (or click inside a listed "
+                        "area) to see or add verdicts._")
+        return
+
+    bump = lambda: state.validation_version.set(state.validation_version.value + 1)  # noqa: E731
+    found = validation.matching(records, picked)
+    refs = [r for r in found if r.source == "reference"]
+    shown = [r for r in found if r.source == "user" and r.status != "superseded"]
+    if refs:     # admins only (for_cube hides reference data from everyone else)
+        names = sorted({r.ref_name for r in refs if r.ref_name})
+        years = sorted({r.ref_year for r in refs if r.ref_year})
+        solara.v.Html(tag="div", style_="font-size:14px;margin-bottom:6px", children=[
+            _chip("ref", "#455a64"), " Matches your reference demolitions"
+            + (f" ({', '.join(map(str, years))})" if years else "")
+            + (f": {', '.join(names[:3])}" if names else "")
+            + ". Only admins see this."])
+    if shown:
+        for rec in sorted(shown, key=lambda r: -r.created_at):
+            VerdictItem(rec, user, bump).key(f"verdict-{rec.id}")
+    else:
+        solara.Markdown("_No verdicts on this change yet._")
+
+    mine = [r for r in shown if r.user_id == user.id and r.status == "active"]
+    solara.Markdown("**Your verdict**" + (" (saving replaces your earlier one)"
+                                          if mine else ""))
+    labels = {v: k for k, v in validation.VERDICTS.items()}
+    solara.Select("What happened here?", values=list(labels),
+                  value=validation.VERDICTS.get(verdict.value, None),
+                  on_value=lambda v: verdict.set(labels.get(v, "")))
+    ev_labels = {v: k for k, v in validation.EVIDENCE.items()}
+    solara.SelectMultiple("Evidence you used", values=[validation.EVIDENCE[e]
+                                                       for e in evidence.value],
+                          all_values=list(ev_labels),
+                          on_value=lambda vs: evidence.set([ev_labels[v] for v in vs]))
+    solara.Select("Confidence", values=list(validation.CONFIDENCE),
+                  value=confidence.value or None, on_value=lambda v: confidence.set(v or ""))
+    solara.InputText("When it happened, if known (e.g. March 2024)", value=event_date)
+    solara.InputText("Link to evidence (optional)", value=link)
+    solara.InputTextArea("Note (optional)", value=note, rows=3)
+
+    def save():
+        try:
+            validation.record(user, cube, picked, cube_key=cube_key, verdict=verdict.value,
+                              evidence=evidence.value, link=link.value,
+                              event_date=event_date.value, confidence=confidence.value,
+                              note=note.value)
+        except (accounts.NotAllowed, ValueError) as e:
+            message.set(("error", str(e)))
+            return
+        _reset()
+        message.set(("ok", "Saved. Thank you!"))
+        bump()
+
+    solara.Button("Save verdict", color="primary", on_click=save,
+                  disabled=not verdict.value)
+    kind, text = message.value
+    if kind == "error":
+        solara.Error(text)
+    elif kind == "ok":
+        solara.Success(text)
+
+
+def _verdict_layer(records) -> Dict:
+    """Verdict outlines for the map: each place's latest counting verdict."""
+    latest: Dict[str, object] = {}
+    for r in sorted(records, key=lambda r: r.created_at):
+        if r.source == "user" and r.counts:
+            latest[json.dumps(r.geometry, sort_keys=True)] = r
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": r.geometry,
+         "properties": {"colour": validation.COLOURS[r.verdict]}}
+        for r in latest.values()]}
+
+
 def _photo_options(results, min_change: float) -> List[Dict]:
     """Detected changes to fetch photos for, strongest first, in the words of the
     Detected changes table ("Strong drop · Mar 2023"). One option per merged event,
@@ -613,8 +794,37 @@ def _ha(x: float) -> str:
     return f"{x:.0f} ha" if x >= 10 else f"{x:.1f} ha"
 
 
+def _chip(text, colour, title=""):
+    return solara.v.Html(
+        tag="span", children=[text], attributes={"title": title},
+        style_=f"display:inline-block;margin-left:6px;padding:0 6px;border-radius:9px;"
+               f"font-size:0.75em;line-height:1.6;white-space:nowrap;color:#fff;"
+               f"background:{colour}")
+
+
+def _verdict_chips(summary) -> list:
+    """Small badges after the place name: what validators said, and (admins only)
+    whether it matches reference data."""
+    if summary is None:
+        return []
+    chips = []
+    if summary.verdict:
+        label = ("mixed verdicts" if summary.verdict == "mixed"
+                 else validation.SHORT[summary.verdict])
+        mark = {"demolition": "✓ ", "none": "✗ "}.get(summary.verdict, "")
+        chips.append(_chip(f"{mark}{label}" + (f" ({summary.count})" if summary.count > 1
+                                                else ""),
+                           validation.COLOURS[summary.verdict],
+                           f"Verdicts from {summary.count} validator"
+                           f"{'s' if summary.count != 1 else ''}"))
+    if summary.reference:
+        chips.append(_chip("ref", "#455a64", "Matches your reference demolitions "
+                                             "(visible to admins only)"))
+    return chips
+
+
 @solara.component
-def CandidateRow(c, names, on_pick, selected):
+def CandidateRow(c, names, on_pick, selected, summary=None):
     """One table row; clicking anywhere on it selects the site and flies there."""
     bg = "background:rgba(255,152,0,0.22);" if selected else ""   # reads in both themes
     when = [_day(c["date_after"])]
@@ -623,7 +833,7 @@ def CandidateRow(c, names, on_pick, selected):
             tag="span", children=["too recent to confirm"],
             style_="font-size:0.8em;opacity:0.7;white-space:nowrap")]
     cells = [
-        solara.v.Html(tag="td", children=[_place_text(c, names)]),
+        solara.v.Html(tag="td", children=[_place_text(c, names), *_verdict_chips(summary)]),
         solara.v.Html(tag="td", children=when, style_="white-space:nowrap"),
     ]
     if "area_ha" in c:
@@ -645,7 +855,7 @@ def CandidateRow(c, names, on_pick, selected):
 
 @solara.component
 def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
-                   min_area_ha=0.0, in_view=False):
+                   min_area_ha=0.0, in_view=False, summaries=None):
     """Strongest changes as a sortable table of place, date, (area) and drop.
 
     by_area lists change areas (largest first); otherwise single pixels (strongest
@@ -709,8 +919,8 @@ def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
                 SortHeader("Drop (dB)", "drop", sort)
         with solara.v.Html(tag="tbody"):
             for c in shown:
-                CandidateRow(c, names.value, on_pick,
-                             selected_rank == c["rank"]).key(f"cand-{c['rank']}")
+                CandidateRow(c, names.value, on_pick, selected_rank == c["rank"],
+                             (summaries or {}).get(c["rank"])).key(f"cand-{c['rank']}")
     solara.Text("Place names © OpenStreetMap contributors",
                 style={"font-size": "0.75em", "opacity": "0.6"})
     if not more.value:
@@ -820,6 +1030,15 @@ def _chart_info(picked, is_area: bool) -> str:
     return text
 
 
+VALIDATION_INFO = (
+    "Record what actually happened at this change, from the satellite photos or other "
+    "evidence. One verdict is enough for a change to count as validated; reviewers and "
+    "admins can veto any verdict (it stays on record, crossed out). Saving again "
+    "replaces your own earlier verdict. Verdicts are only visible to signed-in, "
+    "approved users. On the map, validated places are outlined in their verdict's "
+    "colour: green demolition, purple other change, grey no change, yellow can't tell.")
+
+
 FINDINGS_INFO = ("Strength compares the change with your minimum change setting "
                  "(strong = at least double it). A change seen by more tracks (the "
                  "satellite views this spot from different angles) is more trustworthy.")
@@ -861,6 +1080,7 @@ def Explore(cache_dir: str = "./cache"):
     min_area = solara.use_reactive(logic.DEFAULT_MIN_AREA_HA)            # applied
     min_area_pending = solara.use_reactive(logic.DEFAULT_MIN_AREA_HA)    # live slider
     details_open = solara.use_reactive(False)        # technical detail under the findings
+    validate_open = solara.use_reactive(True)
     map_view = solara.use_reactive(None)             # visible map area, as last reported
     search_box = solara.use_reactive(None)           # map area Strongest changes is limited to
 
@@ -940,6 +1160,14 @@ def Explore(cache_dir: str = "./cache"):
         _rank, hot_deps + [min_change.value, min_area.value, by_pixel.value,
                            str(search_box.value)])
     candidates = areas[:30]
+
+    # Verdicts on this cube's ground, for signed-in approved users (admins also get
+    # reference data). Re-read after a verdict is saved or vetoed.
+    user = state.user.value
+    records = solara.use_memo(
+        lambda: validation.for_cube(cube, user) if cube is not None else [],
+        [active, user and (user.id, user.role), state.validation_version.value,
+         state.registry_version.value])
 
     # --- guards (after all hooks) ---
     if not cubes:
@@ -1072,6 +1300,13 @@ def Explore(cache_dir: str = "./cache"):
                       f"{_slug(pol)}_{start}_{end}.geojson"),
             label="Download map cells (GeoJSON)",
         )
+        if user is not None and user.can_review:
+            solara.FileDownload(lambda: validation.export(user, "csv"),
+                                filename="s1drops_verdicts.csv",
+                                label="Download all verdicts (CSV)")
+            solara.FileDownload(lambda: validation.export(user, "geojson"),
+                                filename="s1drops_verdicts.geojson",
+                                label="Download all verdicts (GeoJSON)")
         if has_lcz:
             solara.Markdown("---\n**Land-use filter**")
             with WithInfo("Local Climate Zones (coarse, ~100 m). Areas of other types "
@@ -1109,7 +1344,8 @@ def Explore(cache_dir: str = "./cache"):
             CubeMap(url, bounds, clicked.set, highlight, height="70vh",
                     footprint=optical_footprint.value, legend_html=_legend_html(legend),
                     focus=focus.value, outline=outline, on_view=map_view.set,
-                    search_box=search_box.value)
+                    search_box=search_box.value,
+                    validated=_verdict_layer(records) if records else None)
             layout.drag_handle("--s1-map-h", target=".s1-map")
             OpticalPanel(cube=cube, cube_key=active, cell=cell, results=results,
                          cube_name=cube_name, cache_dir=cache_dir,
@@ -1141,10 +1377,19 @@ def Explore(cache_dir: str = "./cache"):
             if cand_open.value:
                 with solara.Column(gap="0px").key("body-cand"):
                     ViewSearch(search_box, map_view.value)
-                    CandidateTable(candidates[:30 if cand_more.value else 10],
-                                   pick_candidate, selected_rank, cand_more, cache_dir,
+                    shown = candidates[:30 if cand_more.value else 10]
+                    summaries = {c["rank"]: sm for c in shown
+                                 if (sm := validation.summarise(records, c))} if records else {}
+                    CandidateTable(shown, pick_candidate, selected_rank, cand_more, cache_dir,
                                    by_area=not by_pixel.value, min_area_ha=min_area.value,
-                                   in_view=bool(search_box.value))
+                                   in_view=bool(search_box.value), summaries=summaries)
+                    if user is not None and user.is_admin and any(
+                            r.source == "reference" for r in records) and shown:
+                        hits = sum(1 for sm in summaries.values() if sm.reference)
+                        solara.v.Html(tag="div", style_="font-size:13px;opacity:0.85", children=[
+                            _chip("ref", "#455a64"),
+                            f" Reference check: {hits} of these {len(shown)} match your "
+                            "reference demolitions (admins only)."])
             if cell is not None:
                 lat_c, lon_c = highlight
                 gmaps = f"https://www.google.com/maps/search/?api=1&query={lat_c:.6f},{lon_c:.6f}"
@@ -1216,6 +1461,11 @@ def Explore(cache_dir: str = "./cache"):
                                           f"{start}_{end}_series.csv"),
                                 label="Download signal (CSV)",
                             )
+                SectionHeader("Validation", validate_open, info=VALIDATION_INFO
+                              ).key("hdr-validate")
+                if validate_open.value:
+                    with solara.Column(gap="4px").key("body-validate"):
+                        ValidationPanel(cube, active, picked, records, user)
 
 
 def _display_rows(rows) -> pd.DataFrame:

@@ -37,7 +37,7 @@ REM It inherits S1DROPS_ADMIN_PASSWORD from this process's environment.
 REM Report which copy of the package actually got imported, so a stale install
 REM is visible in the app window instead of silently serving old code.
 python -c "import s1drops, os; print('serving s1drops from', os.path.dirname(s1drops.__file__))"
-start "s1drops app" cmd /k python -m solara run s1drops.app.main --host 127.0.0.1 --port %PORT%
+start "s1drops app" cmd /k python -m uvicorn s1drops.app.server:app --host 127.0.0.1 --port %PORT%
 
 REM Wait until the port actually accepts connections (max ~60s), so the
 REM tunnel never points at a dead socket and 502s on the first hit.

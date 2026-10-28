@@ -17,6 +17,16 @@ services:
     environment:
       S1DROPS_ADMIN_PASSWORD: ${S1DROPS_ADMIN_PASSWORD:?set S1DROPS_ADMIN_PASSWORD in deploy/.env}
       S1DROPS_CACHE_DIR: /data/cache
+      # Accounts and verdicts. Outside the cube cache, backed up by backup-db.sh.
+      S1DROPS_DB_PATH: /data/db/app.db
+      # Signed-in admins (comma-separated emails): these accounts are admins from
+      # their first sign-in, so the first admin needs no one to approve them.
+      S1DROPS_ADMIN_EMAILS: ${S1DROPS_ADMIN_EMAILS:-}
+      # The public address; sign-in links and Google's callback are built from it.
+      S1DROPS_PUBLIC_URL: ${S1DROPS_PUBLIC_URL:-}
+      # Google sign-in (optional): both set turns it on. See README section 6.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       # Empty disables LCZ; set to /data/lcz/lcz_cog.tif once the file is on the host.
       S1DROPS_LCZ_PATH: ${S1DROPS_LCZ_PATH:-}
       S1DROPS_NATIVE10_MAX_KM2: ${S1DROPS_NATIVE10_MAX_KM2:-10}
@@ -28,6 +38,8 @@ services:
     volumes:
       # Baked cubes + optical tiles. Must outlive the container.
       - ${S1DROPS_DATA_DIR:-/srv/s1drops}/cache:/data/cache
+      # Accounts and verdicts database. Must outlive the container.
+      - ${S1DROPS_DATA_DIR:-/srv/s1drops}/db:/data/db
       # LCZ raster, read-only. Harmless if the directory is empty.
       - ${S1DROPS_DATA_DIR:-/srv/s1drops}/lcz:/data/lcz:ro
     # Localhost only: reachable from the server itself (or an SSH tunnel) for
