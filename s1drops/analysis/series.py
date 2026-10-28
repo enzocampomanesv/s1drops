@@ -124,13 +124,40 @@ def extract_series(
     window=0 uses the single clicked pixel; window>=1 uses the spatial median of
     the (2*window+1)^2 neighbourhood at each timestep (speckle reduction for 10 m).
     """
-    times = np.asarray(cube["time"].values)
-    ro = np.asarray(cube["relative_orbit"].values)
-    state = np.asarray(cube["orbit_state"].values)
     ny, nx = cube.sizes["y"], cube.sizes["x"]
 
     vv_db = to_db(_cell_or_window(cube["vv"], yi, xi, window, ny, nx))
     vh_db = to_db(_cell_or_window(cube["vh"], yi, xi, window, ny, nx))
+    return _by_orbit(cube, vv_db, vh_db, pols, yi, xi)
+
+
+def extract_area_series(
+    cube: xr.Dataset,
+    cells: Sequence[Tuple[int, int]],
+    pols: Sequence[str] = POLS,
+) -> List[Series]:
+    """One Series per (pol x relative orbit) for the mean over a set of cells.
+
+    The mean is taken in LINEAR power (as in multilooking), then converted to dB;
+    averaging many cells cancels most speckle. The Series carries the first cell
+    as its (yi, xi).
+    """
+    ys = xr.DataArray(np.array([c[0] for c in cells], dtype=int), dims="cell")
+    xs = xr.DataArray(np.array([c[1] for c in cells], dtype=int), dims="cell")
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)  # all-NaN timesteps
+        vv = np.nanmean(cube["vv"].isel(y=ys, x=xs).values, axis=-1)
+        vh = np.nanmean(cube["vh"].isel(y=ys, x=xs).values, axis=-1)
+    yi, xi = cells[0]
+    return _by_orbit(cube, to_db(vv), to_db(vh), pols, int(yi), int(xi))
+
+
+def _by_orbit(cube, vv_db, vh_db, pols, yi, xi) -> List[Series]:
+    """Split per-timestep dB values into one ascending-date Series per (pol x orbit)."""
+    times = np.asarray(cube["time"].values)
+    ro = np.asarray(cube["relative_orbit"].values)
+    state = np.asarray(cube["orbit_state"].values)
     pol_db = {"vv": vv_db, "vh": vh_db, "vv_vh": vv_db - vh_db}
 
     out: List[Series] = []

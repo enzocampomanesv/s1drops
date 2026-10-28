@@ -20,7 +20,13 @@ from ..config import est_passes_per_year, native10_max_km2
 from . import auth, bakequeue, maputil, state
 
 REDUCTIONS = ["native_median", "overview_med"]
-AOI_MODES = ["registry", "bbox", "upload", "draw"]
+# Plain-language AOI source label -> internal mode.
+AOI_MODES = {
+    "Upload a GeoJSON file": "upload",
+    "Draw on a map": "draw",
+    "Type a bounding box": "bbox",
+    "Extend an existing area (longer period)": "registry",
+}
 
 # label -> (resolution_m, reduction). Presets keep the 10 m + reduction combo sane.
 BAKE_PRESETS = {
@@ -102,11 +108,13 @@ def DrawAOI(on_geom):
 @solara.component
 def BuildForm(cache_dir: str):
     name = solara.use_reactive("")
-    mode = solara.use_reactive("bbox")
-    minx = solara.use_reactive(3.10)
-    miny = solara.use_reactive(6.35)
-    maxx = solara.use_reactive(3.70)
-    maxy = solara.use_reactive(6.75)
+    mode_label = solara.use_reactive(next(iter(AOI_MODES)))
+    mode = AOI_MODES[mode_label.value]
+    # No prefilled box: a stray click on "Add to queue" must not bake a big area.
+    minx = solara.use_reactive(0.0)
+    miny = solara.use_reactive(0.0)
+    maxx = solara.use_reactive(0.0)
+    maxy = solara.use_reactive(0.0)
     start = solara.use_reactive("2024-01-01")
     end = solara.use_reactive("2025-01-01")
     bake_type = solara.use_reactive("100 m · native median")
@@ -120,7 +128,7 @@ def BuildForm(cache_dir: str):
     result = solara.use_reactive("")  # immediate enqueue feedback (per-job state is in the queue)
 
     def _prefill_from_chosen():
-        if mode.value != "registry" or not chosen.value:
+        if mode != "registry" or not chosen.value:
             return
         e = next((c for c in cubes if c.key == chosen.value), None)
         if e and len(e.bbox_ll) == 4:
@@ -130,15 +138,15 @@ def BuildForm(cache_dir: str):
             bake_type.set(_preset_for(e.resolution, e.reduction))
             mnx, mny, mxx, mxy = e.bbox_ll
             minx.set(mnx); miny.set(mny); maxx.set(mxx); maxy.set(mxy)
-    solara.use_effect(_prefill_from_chosen, [chosen.value, mode.value])
+    solara.use_effect(_prefill_from_chosen, [chosen.value, mode])
 
     def resolve_aoi() -> Tuple[Optional[tuple], object, Optional[str]]:
-        if mode.value == "registry":
+        if mode == "registry":
             e = next((c for c in cubes if c.key == chosen.value), None)
             if e is None:
                 return None, None, "Pick an existing AOI from the registry."
             return tuple(e.bbox_ll), None, _valid_lonlat(tuple(e.bbox_ll))
-        if mode.value == "bbox":
+        if mode == "bbox":
             bbox = (minx.value, miny.value, maxx.value, maxy.value)
             return bbox, None, _valid_lonlat(bbox)
         if not geojson_text.value:
@@ -156,6 +164,9 @@ def BuildForm(cache_dir: str):
         except auth.NotAuthorized as e:
             result.set(str(e))
             return
+        if not name.value.strip():
+            result.set("Give the area a name (e.g. lagos) so it can be found later.")
+            return
         bbox, geom, err = resolve_aoi()
         if err:
             result.set(err)
@@ -169,14 +180,16 @@ def BuildForm(cache_dir: str):
                 "cap for 10 m bakes. Shrink the AOI or pick a 100 m preset."
             )
             return
-        label = f"{name.value or 'cube'} · {int(round(res))} m · {start.value}..{end.value}"
+        label = f"{name.value.strip()} · {int(round(res))} m · {start.value}..{end.value}"
         bakequeue.enqueue(
             label=label, bbox=bbox, geom=geom, start=start.value, end=end.value,
-            name=name.value or None, reduction=red, resolution=res, cache_dir=cache_dir,
+            name=name.value.strip(), reduction=red, resolution=res, cache_dir=cache_dir,
         )
         result.set(f"Queued: {label}")
 
-    solara.Markdown("### Build / extend a cube")
+    solara.Markdown("### Prepare a new area\n"
+                    "_Downloads the radar history for an area so it can be explored. "
+                    "Large areas or long periods can take a while._")
     _lcz_state, _lcz_p = lcz_status()
     if _lcz_state == "enabled":
         solara.Success(f"LCZ enabled — new bakes include the LCZ layer.  ({_lcz_p})")
@@ -185,26 +198,26 @@ def BuildForm(cache_dir: str):
     else:
         solara.Info("LCZ not configured — cubes will bake without LCZ filtering. "
                     "Set S1DROPS_LCZ_PATH and restart to enable it.")
-    solara.InputText("Name (e.g. lagos)", value=name)
-    solara.Select("AOI source", value=mode, values=AOI_MODES)
-    if mode.value == "registry":
+    solara.InputText("Area name (required, e.g. lagos)", value=name)
+    solara.Select("How to define the area", value=mode_label, values=list(AOI_MODES))
+    if mode == "registry":
         if not cubes:
-            solara.Info("No existing cubes yet — use bbox, upload, or draw.")
+            solara.Info("No areas prepared yet — upload, draw, or type a box instead.")
         else:
             solara.Select(
-                "Existing AOI", value=chosen, values=[c.key for c in cubes]
+                "Existing area", value=chosen, values=[c.key for c in cubes]
             )
             solara.Markdown(
                 "_Reuses this cube's footprint. Widen the date range below to "
                 "extend it; the original AOI mask is preserved._"
             )
-    elif mode.value == "bbox":
+    elif mode == "bbox":
         with solara.Row():
             solara.InputFloat("min lon", value=minx)
             solara.InputFloat("min lat", value=miny)
             solara.InputFloat("max lon", value=maxx)
             solara.InputFloat("max lat", value=maxy)
-    elif mode.value == "upload":
+    elif mode == "upload":
         def on_file(f):
             geojson_text.set(f["data"].decode("utf-8"))
         solara.FileDrop(label="Drop a GeoJSON (WGS84 lon/lat)", on_file=on_file, lazy=False)
@@ -218,7 +231,7 @@ def BuildForm(cache_dir: str):
     with solara.Row():
         solara.InputText("Start (YYYY-MM-DD)", value=start)
         solara.InputText("End (YYYY-MM-DD)", value=end)
-    solara.Select("Bake type", value=bake_type, values=list(BAKE_PRESETS))
+    solara.Select("Detail level", value=bake_type, values=list(BAKE_PRESETS))
     _res, _red = BAKE_PRESETS[bake_type.value]
     _bbox_rd, _geom_rd, _err_rd = resolve_aoi()
     if not _err_rd and _bbox_rd is not None:
@@ -283,7 +296,7 @@ def ManageCubes(cache_dir: str):
         lambda: list_cubes(cache_dir), [cache_dir, state.registry_version.value]
     )
     confirm = solara.use_reactive("")  # key pending confirmation
-    solara.Markdown("### Cubes")
+    solara.Markdown("### Prepared areas")
     if not cubes:
         solara.Markdown("_(none)_")
         return

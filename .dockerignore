@@ -16,3 +16,12 @@ cache/
 # Secrets: COPY . . in the Dockerfile would otherwise bake deploy/.env into the image.
 .env
 **/.env
+
+# Credentials that may sit in the working tree; never bake them into an image.
+*_pw.txt
+*_pw
+*password*
+*passwd*
+*secret*
+*.key
+*.pem

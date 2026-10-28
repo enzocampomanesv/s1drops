@@ -114,3 +114,59 @@ def test_plot_figure_has_traces_and_spans():
     fig = plots.figure([res])
     assert plots.count_traces(fig) >= 1        # at least the data trace
     assert plots.count_drop_spans(fig) >= 1    # the shaded drop span
+
+
+def test_plot_figure_dark_theme():
+    dates = np.datetime64("2024-01-01") + np.arange(20) * np.timedelta64(12, "D")
+    vals = np.concatenate([np.full(10, -7.0), np.full(10, -12.0)])
+    res = detect_pelt(Series("vv", 1, "ascending", dates, vals, 1, 1), min_drop_db=2.5)
+    light, dark = plots.figure([res]), plots.figure([res], dark=True)
+    assert light.layout.paper_bgcolor is None
+    assert dark.layout.paper_bgcolor == "rgba(0,0,0,0)"    # page shows through
+    seg = [t.line.color for t in dark.data if t.hoverinfo == "skip"]
+    assert seg and all(c.startswith("rgba(255") for c in seg)   # light lines on dark
+
+
+def test_hotspot_with_dates_matches_layer():
+    cube = _cube()
+    mag, before, after = logic.hotspot_with_dates(cube, pol="vv")
+    np.testing.assert_array_equal(mag, logic.hotspot_layer(cube, pol="vv"))
+    assert before[1, 1] < after[1, 1]
+
+
+def test_top_candidates_ranks_drop_cell_first():
+    cube = _cube()
+    cands = logic.top_candidates(cube, *logic.hotspot_with_dates(cube, pol="vv"), n=5)
+    assert (cands[0]["row"], cands[0]["col"]) == (1, 1)
+    assert cands[0]["drop_db"] > 5
+    assert cands[0]["date_before"] < cands[0]["date_after"]
+    assert 3.3 < cands[0]["lon"] < 3.6 and 6.4 < cands[0]["lat"] < 6.6
+
+
+def test_top_candidates_suppresses_neighbours_and_threshold():
+    cube = _cube()
+    hot = logic.hotspot_with_dates(cube, pol="vv")
+    # 250 m spacing on a 100 m grid: every cell of the 3x3 test grid is within reach
+    # of the winner, so one demolition yields one candidate, not nine.
+    assert len(logic.top_candidates(cube, *hot, n=10)) == 1
+    assert len(logic.top_candidates(cube, *hot, n=10, min_value=-1.0, spacing_m=0)) > 1
+    assert logic.top_candidates(cube, *hot, min_value=50.0) == []
+
+
+def test_gradient_stops_are_hex():
+    stops = render.gradient_stops("YlOrRd", n=4)
+    assert len(stops) == 4 and all(s.startswith("#") and len(s) == 7 for s in stops)
+
+
+def test_stepdown_needs_three_passes_before_and_two_after():
+    flat = np.full(12, -10.0)
+    edge = flat.copy(); edge[0] = 5.0            # one bright first image
+    late = flat.copy(); late[-2:] = -18.0        # real drop, only 2 passes after
+    tail = flat.copy(); tail[-1] = -18.0         # 1 pass after: not yet a drop
+    early = flat.copy(); early[3:] = -18.0       # drop after exactly 3 passes
+    db = np.stack([edge, late, tail, early], axis=1)[:, :, None]   # (time, 4, 1)
+    best = logic._max_stepdown(db)[:, 0]
+    # The bright pass is now averaged with 2 normal ones (15 dB alone -> 5 dB).
+    assert best[0] <= 5.0 + 1e-9
+    assert best[1] > 7.0 and best[3] > 7.0        # established level, then sustained drop
+    assert best[2] < best[1]                      # 1 pass after can't win outright

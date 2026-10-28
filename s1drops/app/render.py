@@ -91,6 +91,12 @@ def colorize(
     return (rgba * 255).astype("uint8")
 
 
+def gradient_stops(cmap: str, n: int = 8) -> List[str]:
+    """`n` evenly spaced hex colours along a colormap, for a CSS legend gradient."""
+    cm = matplotlib.colormaps[cmap]
+    return [mcolors.to_hex(cm(i / (n - 1))) for i in range(n)]
+
+
 def png_data_url(rgba: np.ndarray) -> str:
     buf = io.BytesIO()
     mpimg.imsave(buf, rgba, format="png")

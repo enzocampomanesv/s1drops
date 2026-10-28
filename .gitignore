@@ -52,3 +52,12 @@ desktop.ini
 
 # ---- Build artefacts ----
 *.zip
+
+# ---- Credentials (never commit) ----
+*_pw.txt
+*_pw
+*password*
+*passwd*
+*secret*
+*.key
+*.pem
