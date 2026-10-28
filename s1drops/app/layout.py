@@ -69,6 +69,10 @@ CSS = """
 .s1-left { flex: 0 0 var(--s1-mapcol); min-width: 0; }
 .s1-right { flex: 1 1 0; min-width: 0; }
 .s1-map { height: var(--s1-map-h) !important; }
+/* Solara wraps the map widget in a div with height:100%, i.e. the whole left
+   column, which stretches to the side panel's height. Size it to the map instead,
+   or the photos below can't move up when the map is dragged smaller. */
+.s1-left > div:has(> .s1-map) { height: auto !important; }
 .s1-s2-map { height: var(--s1-s2-h) !important; }
 
 /* Drag handles: invisible until hovered, with a short grip mark in the middle. */

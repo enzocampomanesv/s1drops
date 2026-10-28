@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 import threading
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import ipyleaflet
 import numpy as np
@@ -398,9 +398,24 @@ def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx):
     solara.use_effect(lambda: swap(m2, after, after_idx), [after_idx.value])
 
 
+def _photo_options(results, min_change: float) -> List[Dict]:
+    """Detected changes to fetch photos for, strongest first, in the words of the
+    Detected changes table ("Strong drop · Mar 2023"). One option per merged event,
+    anchored on its first and last image so the photos bracket every track's view."""
+    opts, seen = [], {}
+    for e in sorted(findings.events(results), key=lambda e: -abs(e.delta_db)):
+        label = (f"{findings.strength(e.delta_db, min_change)} "
+                 f"{'drop' if e.is_drop else 'rise'} · {pd.Timestamp(e.end):%b %Y}")
+        seen[label] = seen.get(label, 0) + 1
+        if seen[label] > 1:
+            label += f" ({seen[label]})"
+        opts.append({"label": label, "date_before": str(e.start), "date_after": str(e.end)})
+    return opts
+
+
 @solara.component
 def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
-                 default_start, default_end, footprint):
+                 default_start, default_end, footprint, min_change):
     """Fetch + show Sentinel-2 before/after imagery for a drop (on demand)."""
     mode = solara.use_reactive("cell")          # "cell" | "manual"
     sel_label = solara.use_reactive("")
@@ -416,7 +431,7 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
     before_idx = solara.use_reactive(0)          # which candidate scene is shown
     after_idx = solara.use_reactive(0)
 
-    opts = logic.drop_options(results) if results else []
+    opts = _photo_options(results, min_change)
     labels = [o["label"] for o in opts]
 
     def _fix_sel():
@@ -438,8 +453,7 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
                 error.set("No change detected here — switch to “Choose dates”.")
                 return
             o = opts[labels.index(sel_label.value)] if sel_label.value in labels else opts[0]
-            before_a = np.datetime_as_string(o["date_before"], unit="D")
-            after_a = np.datetime_as_string(o["date_after"], unit="D")
+            before_a, after_a = o["date_before"], o["date_after"]
         else:
             before_a, after_a = man_before.value, man_after.value
 
@@ -947,8 +961,11 @@ def Explore(cache_dir: str = "./cache"):
                       values=list(cube_labels),
                       on_value=lambda lbl: (cube_key.set(cube_labels[lbl]), clicked.set(None)))
         solara.Select("Period", value=period, values=period_options, on_value=pick_period)
-        solara.SliderRangeInt("Fine-tune dates", value=date_idx, min=0, max=max(0, n - 1))
-        solara.Markdown(f"**{start} → {end}**  ({hi - lo + 1} of {n} satellite passes)")
+        with WithInfo(f"{hi - lo + 1} of {n} satellite passes fall in this range. Drag "
+                      "either end to narrow the period analysed."):
+            solara.SliderRangeInt("Fine-tune dates", value=date_idx, min=0,
+                                  max=max(0, n - 1))
+        solara.Markdown(f"**{start} → {end}**")
 
         solara.Markdown("---\n**Map**")
         solara.Select("Show on map", value=layer_label, values=layer_options)
@@ -1024,7 +1041,8 @@ def Explore(cache_dir: str = "./cache"):
             OpticalPanel(cube=cube, cube_key=active, cell=cell, results=results,
                          cube_name=cube_name, cache_dir=cache_dir,
                          default_start=start, default_end=end,
-                         footprint=optical_footprint).key("optical-panel")
+                         footprint=optical_footprint,
+                         min_change=min_change.value).key("optical-panel")
         layout.drag_handle("--s1-mapcol")
         with solara.Column(classes=["s1-right"]):
             # Every direct child is keyed so collapsing a section (which changes the
@@ -1069,7 +1087,6 @@ def Explore(cache_dir: str = "./cache"):
                         f"{'s' if area['passes_after'] != 1 else ''} per satellite track "
                         "after this drop. Check again later, or compare satellite photos."
                     ).key("recent-note")
-                title = f"{lat_c:.5f}, {lon_c:.5f}"
                 picked = area or next(
                     (c for c in candidates if c["rank"] == selected_rank), None)
                 if per_track.value:
@@ -1089,11 +1106,11 @@ def Explore(cache_dir: str = "./cache"):
                                     f"{method}-{sensitivity.value}-{min_change.value}-"
                                     f"{window.value}-{drop_dir}-{dark}-{per_track.value}")
                         if per_track.value:
-                            fig = plots.figure(results, title=title, dark=dark)
+                            fig = plots.figure(results, dark=dark)
                         else:
                             fig = plots.simple_figure(
                                 findings.relative_signal(results, events), events,
-                                min_change=min_change.value, title=title, dark=dark,
+                                min_change=min_change.value, dark=dark,
                                 table_drop=_table_drop(picked))
                         ResponsiveFigure(fig).key(plot_key)
                 SectionHeader("Detected changes", drops_open,

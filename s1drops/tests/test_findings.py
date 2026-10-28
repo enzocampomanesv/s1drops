@@ -79,6 +79,17 @@ def test_simple_figure_labels_events_without_overlap():
     assert fig.layout.yaxis.ticksuffix == "%"
 
 
+def test_photo_options_name_each_event_once_in_words():
+    from s1drops.app.explore import _photo_options
+
+    a = _res(1, ["2023-01-01"], [-7.0], [_drop("2023-02-15", "2023-02-27", -10.0)])
+    b = _res(2, ["2023-01-01"], [-7.0], [_drop("2023-02-21", "2023-03-05", -8.0),
+                                         _drop("2024-08-01", "2024-08-13", -3.0)])
+    opts = _photo_options([a, b], 2.5)
+    assert [o["label"] for o in opts] == ["Strong drop · Mar 2023", "Slight drop · Aug 2024"]
+    assert (opts[0]["date_before"], opts[0]["date_after"]) == ("2023-02-15", "2023-03-05")
+
+
 def test_simple_figure_marks_the_table_drop():
     dates = D("2023-01-01") + np.arange(10) * np.timedelta64(12, "D")
     r = _res(1, dates, [-5.0] * 5 + [-8.0] * 5)

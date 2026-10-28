@@ -207,8 +207,9 @@ def test_csv_exports_share_the_same_cell_columns(cube, cell, expected):
 # ---- render: the shared grid/bounds helpers --------------------------------
 
 def test_dst_grid_and_bounds_agree_between_array_and_rgb_paths(cube):
-    """to_webmercator and overlay_rgb now share _dst_grid/_latlon_bounds, so the
-    same source geobox must place both overlays on identical bounds."""
+    """to_webmercator and overlay_rgb share _dst_grid/_latlon_bounds, so the same
+    source geobox places both overlays on the same bounds (the cube layer's finer
+    grid can round its far edges differently, by less than a cell)."""
     ny, nx = cube.sizes["y"], cube.sizes["x"]
     layer = logic.hotspot_layer(cube, pol="vv")
     _merc, bounds_arr = render.to_webmercator(layer, cube)
@@ -216,7 +217,30 @@ def test_dst_grid_and_bounds_agree_between_array_and_rgb_paths(cube):
     rgb = np.zeros((ny, nx, 3), dtype="uint8")
     _url, bounds_rgb = render.overlay_rgb(rgb, cube.attrs["grid_transform"],
                                           cube.attrs["crs"])
-    assert bounds_arr == bounds_rgb
+    cell_deg = float(cube.attrs.get("resolution", 100.0)) / 111_000
+    assert np.allclose(bounds_arr, bounds_rgb, atol=cell_deg)
+
+
+def test_cube_overlay_cells_sit_on_their_true_edges(cube):
+    """A single cell drawn on the map lands within a fraction of a cell of its
+    real footprint, so area outlines (built from true cell edges) match it."""
+    from pyproj import Transformer
+
+    arr = np.full((cube.sizes["y"], cube.sizes["x"]), np.nan)
+    y, x = cube.sizes["y"] // 2, cube.sizes["x"] // 2
+    arr[y, x] = 1.0
+    dst, _ = render.to_webmercator(arr, cube)
+    st = render.src_transform(cube)
+    dt, _w, _h = render._dst_grid(st, cube.attrs["crs"], *arr.shape, oversample=True)
+    yy, xx = np.nonzero(np.isfinite(dst))
+    res = float(cube.attrs.get("resolution", 100.0))
+    cx, cy = float(cube["x"].values[x]), float(cube["y"].values[y])
+    tx = Transformer.from_crs(cube.attrs["crs"], "EPSG:3857", always_xy=True)
+    (left, right), (top, bottom) = tx.transform([cx - res / 2, cx + res / 2],
+                                                [cy + res / 2, cy - res / 2])
+    drawn = [dt.c + dt.a * xx.min(), dt.c + dt.a * (xx.max() + 1),
+             dt.f + dt.e * yy.min(), dt.f + dt.e * (yy.max() + 1)]
+    assert np.allclose(drawn, [left, right, top, bottom], atol=0.25 * res)
 
 
 def test_latlon_bounds_are_ordered_and_near_the_aoi(cube):

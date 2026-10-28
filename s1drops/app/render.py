@@ -37,11 +37,28 @@ def src_transform(cube: xr.Dataset) -> Affine:
     return Affine(res, 0.0, xs[0] - res / 2, 0.0, -res, ys[0] + res / 2)
 
 
-def _dst_grid(src_transform_: Affine, src_crs, h0: int, w0: int):
-    """Web-mercator grid covering a source raster. Returns (transform, width, height)."""
+MAX_OVERLAY_PX = 2400   # longest side of an oversampled cube overlay
+MAX_OVERSAMPLE = 8
+
+
+def _dst_grid(src_transform_: Affine, src_crs, h0: int, w0: int, oversample: bool = False):
+    """Web-mercator grid covering a source raster. Returns (transform, width, height).
+
+    At the default (about native) resolution, nearest-neighbour resampling snaps
+    every cell edge to the 3857 grid, shifting cells by up to half a cell: blocky
+    cube layers then miss outlines drawn from the true cell edges. oversample=True
+    uses a finer grid (up to MAX_OVERSAMPLE x, capped at MAX_OVERLAY_PX) so edges
+    land within a fraction of a cell.
+    """
     left, bottom, right, top = array_bounds(h0, w0, src_transform_)
-    return calculate_default_transform(
+    dt, w, h = calculate_default_transform(
         str(src_crs), "EPSG:3857", w0, h0, left, bottom, right, top
+    )
+    k = min(MAX_OVERSAMPLE, MAX_OVERLAY_PX // max(w, h, 1)) if oversample else 1
+    if k <= 1:
+        return dt, w, h
+    return calculate_default_transform(
+        str(src_crs), "EPSG:3857", w0, h0, left, bottom, right, top, resolution=dt.a / k
     )
 
 
@@ -59,7 +76,7 @@ def to_webmercator(arr: np.ndarray, cube: xr.Dataset) -> Tuple[np.ndarray, LatLo
     src_crs = cube.attrs.get("crs", "EPSG:4326")
     st = src_transform(cube)
     h0, w0 = arr.shape
-    dt, w, h = _dst_grid(st, src_crs, h0, w0)
+    dt, w, h = _dst_grid(st, src_crs, h0, w0, oversample=True)
     dst = np.full((h, w), np.nan, dtype="float64")
     reproject(
         arr.astype("float64"), dst,

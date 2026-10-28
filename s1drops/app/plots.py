@@ -119,7 +119,7 @@ def simple_figure(
             ))
     fig.update_layout(
         title=title, yaxis_title="Radar reflection (% of usual)",
-        legend=dict(orientation="h", y=-0.2), margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(orientation="h", y=-0.2), margin=dict(l=50, r=20, t=40 if title else 16, b=40),
         height=420, autosize=True, hovermode="closest",
     )
     fig.update_yaxes(ticksuffix="%", rangemode="tozero")
@@ -166,7 +166,7 @@ def figure(
                 ))
     fig.update_layout(
         title=title, xaxis_title="date", yaxis_title="backscatter (dB)",
-        legend=dict(orientation="h", y=-0.2), margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(orientation="h", y=-0.2), margin=dict(l=50, r=20, t=40 if title else 16, b=40),
         height=420, autosize=True,
     )
     _theme(fig, dark)
