@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+# Same Python minor version as the development venv (see requirements-lock.txt).
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -9,10 +10,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies first, separately from app code.
-# This layer only gets invalidated when requirements.txt changes,
-# not on every source edit.
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# This layer only gets invalidated when the requirements change,
+# not on every source edit. The lock pins every package to the version
+# tested locally: unpinned, a fresh build picks up whatever is newest
+# (e.g. ipyvuetify 3, which drops components the UI uses).
+COPY requirements.txt requirements-lock.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c requirements-lock.txt
 
 # Now bring in the rest of the source and install the package itself.
 COPY . .
