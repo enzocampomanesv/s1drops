@@ -462,6 +462,26 @@ def hotspot_with_local(
                     lcz_classes=lcz_classes, with_local=True)
 
 
+def cells_in_bounds(cube: xr.Dataset, box) -> np.ndarray:
+    """Boolean (y, x) grid of cells whose centre lies in a lat/lon box
+    ((south, west), (north, east)), e.g. the visible map area."""
+    from pyproj import Transformer
+
+    (south, west), (north, east) = box
+    xs = np.asarray(cube["x"].values, dtype="float64")
+    ys = np.asarray(cube["y"].values, dtype="float64")
+    gx, gy = np.meshgrid(xs, ys)
+    tx = Transformer.from_crs(cube.attrs["crs"], "EPSG:4326", always_xy=True)
+    lon, lat = tx.transform(gx, gy)
+    return (lat >= south) & (lat <= north) & (lon >= west) & (lon <= east)
+
+
+def within(hot: Tuple[np.ndarray, ...], mask: np.ndarray) -> Tuple[np.ndarray, ...]:
+    """A hotspot tuple (magnitude first) with cells outside `mask` dropped, so
+    ranking runs on that part of the map only (areas are cut at its edge)."""
+    return (np.where(mask, hot[0], np.nan),) + tuple(hot[1:])
+
+
 def _reported(mag: np.ndarray, local: Optional[np.ndarray]) -> np.ndarray:
     """The drop shown to users: the local drop where the whole-period one understates it."""
     return mag if local is None else np.fmax(mag, local)

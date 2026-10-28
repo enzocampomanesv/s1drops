@@ -147,6 +147,40 @@ def test_passes_after_counts_the_best_covered_track():
     assert [c["recent"] for c in flagged] == [False, True, True]
 
 
+def _box(cube, rows, cols):
+    """Lat/lon box ((s, w), (n, e)) around a block of cells, edges at mid-cell."""
+    from pyproj import Transformer
+    tx = Transformer.from_crs(cube.attrs["crs"], "EPSG:4326", always_xy=True)
+    xs, ys = cube["x"].values, cube["y"].values
+    (w, e), (n, s) = tx.transform([xs[cols[0]] - 40, xs[cols[1]] + 40],
+                                  [ys[rows[0]] + 40, ys[rows[1]] - 40])
+    return ((s, w), (n, e))
+
+
+def test_cells_in_bounds_picks_the_cells_in_view():
+    cube = _grid()
+    inside = logic.cells_in_bounds(cube, _box(cube, (1, 3), (2, 5)))
+    assert inside.sum() == 3 * 4
+    assert inside[1, 2] and inside[3, 5] and not inside[0, 2] and not inside[1, 6]
+
+
+def test_ranking_within_a_map_view():
+    cube, lay = _grid(), _layers()
+    _mark(lay, BLOCK, 4.0, "2023-03-01")                    # rows 1-3, cols 1-2
+    _mark(lay, [(6, 5), (6, 6), (7, 5), (7, 6)], 5.0, "2023-03-01")
+    everywhere, _ = logic.find_clusters(cube, *lay, min_value=2.5, min_area_ha=1.0)
+    assert [a["n_cells"] for a in everywhere] == [5, 4]
+    view = logic.cells_in_bounds(cube, _box(cube, (5, 7), (4, 7)))
+    areas, labels = logic.find_clusters(cube, *logic.within(lay, view),
+                                        min_value=2.5, min_area_ha=1.0)
+    assert [a["n_cells"] for a in areas] == [4] and labels[1, 1] == -1
+    # An area crossing the edge of the view counts only its part inside.
+    view = logic.cells_in_bounds(cube, _box(cube, (1, 2), (0, 7)))
+    areas, _ = logic.find_clusters(cube, *logic.within(lay, view),
+                                   min_value=2.5, min_area_ha=1.0)
+    assert [a["n_cells"] for a in areas] == [4]            # (3, 2) is outside
+
+
 def test_area_series_is_the_mean_in_linear_power():
     from s1drops.tests.test_app import _cube
     cube = _cube()                     # cell (1, 1) drops to -12 dB, others flat at ~-7

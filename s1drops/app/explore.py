@@ -116,7 +116,7 @@ def _fit_zoom(bounds, viewport_px: int = 340) -> int:
 @solara.component
 def CubeMap(overlay_url, bounds, on_click, highlight: Optional[Tuple[float, float]],
             height: str = "80vh", footprint=None, legend_html: str = "", focus=None,
-            outline=None):
+            outline=None, on_view=None, search_box=None):
     map_el = ipyleaflet.Map.element(
         scroll_wheel_zoom=True, layout=Layout(height=height, width="100%"),
     )
@@ -166,7 +166,7 @@ def CubeMap(overlay_url, bounds, on_click, highlight: Optional[Tuple[float, floa
     def update_footprint():
         m = solara.get_widget(map_el)
         for lyr in list(m.layers):
-            if isinstance(lyr, ipyleaflet.Rectangle):
+            if isinstance(lyr, ipyleaflet.Rectangle) and lyr.name == "Optical AOI":
                 m.remove(lyr)
         if footprint:
             rect = ipyleaflet.Rectangle(
@@ -186,6 +186,36 @@ def CubeMap(overlay_url, bounds, on_click, highlight: Optional[Tuple[float, floa
             m.add(ipyleaflet.GeoJSON(data=outline, name="Selected area", style={
                 "color": "#00e5ff", "weight": 3, "fill": False}))
     solara.use_effect(update_outline, [str(outline)])
+
+    def update_search_box():
+        # The map area Strongest changes was computed for, when limited to a view.
+        m = solara.get_widget(map_el)
+        for lyr in list(m.layers):
+            if getattr(lyr, "name", "") == "Searched area":
+                m.remove(lyr)
+        if search_box:
+            box = ipyleaflet.Rectangle(bounds=search_box, color="#ffffff", weight=2,
+                                       dash_array="6 6", fill=False, opacity=0.8)
+            box.name = "Searched area"
+            m.add(box)
+    solara.use_effect(update_search_box, [str(search_box)])
+
+    def report_view():
+        # The visible area ((south, west), (north, east)), as the browser reports it
+        # after each pan/zoom, for "only within the map view".
+        if on_view is None:
+            return
+        m = solara.get_widget(map_el)
+
+        def changed(change):
+            if change["new"]:
+                on_view(tuple(tuple(float(v) for v in c) for c in change["new"]))
+
+        m.observe(changed, "bounds")
+        if m.bounds:
+            on_view(tuple(tuple(float(v) for v in c) for c in m.bounds))
+        return lambda: m.unobserve(changed, "bounds")
+    solara.use_effect(report_view, [on_view])
 
     def update_legend():
         # The legend is the map's only WidgetControl, so it can be found by type.
@@ -615,7 +645,7 @@ def CandidateRow(c, names, on_pick, selected):
 
 @solara.component
 def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
-                   min_area_ha=0.0):
+                   min_area_ha=0.0, in_view=False):
     """Strongest changes as a sortable table of place, date, (area) and drop.
 
     by_area lists change areas (largest first); otherwise single pixels (strongest
@@ -651,10 +681,14 @@ def CandidateTable(candidates, on_pick, selected_rank, more, cache_dir, by_area,
 
     if not candidates:
         solara.Markdown(
-            f"_No areas of at least {_ha(min_area_ha)} changed together in this period. "
-            "Try a smaller minimum area or a lower minimum change._" if by_area else
-            "_No changes above the minimum in this period. "
-            "Try a lower minimum change or a longer period._")
+            f"_No areas of at least {_ha(min_area_ha)} changed together "
+            f"{'in this map area' if in_view else 'in this period'}. "
+            "Try a smaller minimum area or a lower minimum change"
+            + (", or search a larger map area._" if in_view else "._") if by_area else
+            "_No changes above the minimum "
+            f"{'in this map area' if in_view else 'in this period'}. "
+            "Try a lower minimum change or a longer period"
+            + (", or search a larger map area._" if in_view else "._"))
         return
     col, desc = sort.value
     keyf = {
@@ -708,6 +742,36 @@ def FindingsTable(events, min_change):
                     solara.v.Html(tag="td", style_="white-space:nowrap", children=[
                         f"{e.tracks} of {e.total_tracks} satellite "
                         f"track{'s' if e.total_tracks != 1 else ''}"])
+
+
+def _same_view(a, b) -> bool:
+    """Two map views equal to ~1 m (the browser reports positions with float noise)."""
+    return a is not None and b is not None and np.allclose(a, b, atol=1e-5)
+
+
+@solara.component
+def ViewSearch(search_box, map_view):
+    """"Only within the map view": rank Strongest changes in the visible area.
+
+    Ticking it takes a snapshot of the view (outlined dashed on the map) instead of
+    following the map, since picking a row zooms the map in; after a pan or zoom,
+    a button searches the new view.
+    """
+    def toggle(on):
+        search_box.set(map_view if on and map_view else None)
+
+    with solara.Row(style={"align-items": "center", "flex-wrap": "wrap"}, gap="4px"):
+        solara.Checkbox(label="Only within the map view", value=bool(search_box.value),
+                        on_value=toggle, disabled=map_view is None)
+        if search_box.value and not _same_view(search_box.value, map_view):
+            solara.Button("Search current view", text=True, icon_name="mdi-refresh",
+                          on_click=lambda: search_box.set(map_view))
+        InfoTip("Ranks changes inside the part of the map you're looking at, instead "
+                "of the whole area: zoom or pan to a neighbourhood first, then tick "
+                "this. The searched area is outlined with a dashed line. The list "
+                "doesn't follow the map as you move it (picking a row zooms in); press "
+                "“Search current view” to search wherever the map is now. Areas that "
+                "cross the edge of the view count only the part inside it.")
 
 
 def _candidates_info(by_area: bool) -> str:
@@ -797,6 +861,8 @@ def Explore(cache_dir: str = "./cache"):
     min_area = solara.use_reactive(logic.DEFAULT_MIN_AREA_HA)            # applied
     min_area_pending = solara.use_reactive(logic.DEFAULT_MIN_AREA_HA)    # live slider
     details_open = solara.use_reactive(False)        # technical detail under the findings
+    map_view = solara.use_reactive(None)             # visible map area, as last reported
+    search_box = solara.use_reactive(None)           # map area Strongest changes is limited to
 
     def _ensure_key():
         if keys and cube_key.value not in keys:
@@ -823,6 +889,8 @@ def Explore(cache_dir: str = "./cache"):
         if n:
             date_idx.set((0, n - 1))
     solara.use_effect(_reset_range, [active, n])
+    # A searched map area belongs to the cube it was drawn on.
+    solara.use_effect(lambda: search_box.set(None), [active])
 
     lo, hi = date_idx.value
     if n:
@@ -856,17 +924,21 @@ def Explore(cache_dir: str = "./cache"):
     def _rank():
         if hot is None:
             return [], None
+        ranked = hot
+        if search_box.value:   # rank within the searched map area only
+            ranked = logic.within(hot, logic.cells_in_bounds(cube, search_box.value))
         if by_pixel.value:
             found, labels = logic.flag_recent(
-                cube, logic.top_candidates(cube, *hot, n=30, min_value=min_change.value),
+                cube, logic.top_candidates(cube, *ranked, n=30, min_value=min_change.value),
                 end=end, direction=orbit_dir), None
         else:
-            found, labels = logic.find_clusters(cube, *hot, min_value=min_change.value,
+            found, labels = logic.find_clusters(cube, *ranked, min_value=min_change.value,
                                                 min_area_ha=min_area.value,
                                                 end=end, direction=orbit_dir)
         return [dict(c, rank=i) for i, c in enumerate(found, 1)], labels
     areas, area_labels = solara.use_memo(
-        _rank, hot_deps + [min_change.value, min_area.value, by_pixel.value])
+        _rank, hot_deps + [min_change.value, min_area.value, by_pixel.value,
+                           str(search_box.value)])
     candidates = areas[:30]
 
     # --- guards (after all hooks) ---
@@ -1036,7 +1108,8 @@ def Explore(cache_dir: str = "./cache"):
         with solara.Column(classes=["s1-left"]):
             CubeMap(url, bounds, clicked.set, highlight, height="70vh",
                     footprint=optical_footprint.value, legend_html=_legend_html(legend),
-                    focus=focus.value, outline=outline)
+                    focus=focus.value, outline=outline, on_view=map_view.set,
+                    search_box=search_box.value)
             layout.drag_handle("--s1-map-h", target=".s1-map")
             OpticalPanel(cube=cube, cube_key=active, cell=cell, results=results,
                          cube_name=cube_name, cache_dir=cache_dir,
@@ -1061,14 +1134,17 @@ def Explore(cache_dir: str = "./cache"):
                         "eviction.")
             if click_note:
                 solara.Warning(click_note).key("click-note")
-            SectionHeader(f"Strongest changes ({(start or '')[:4]}–{(end or '')[:4]})",
+            SectionHeader(f"Strongest changes ({(start or '')[:4]}–{(end or '')[:4]}"
+                          + (", map area" if search_box.value else "") + ")",
                           cand_open, info=_candidates_info(not by_pixel.value)
                           ).key("hdr-cand")
             if cand_open.value:
                 with solara.Column(gap="0px").key("body-cand"):
+                    ViewSearch(search_box, map_view.value)
                     CandidateTable(candidates[:30 if cand_more.value else 10],
                                    pick_candidate, selected_rank, cand_more, cache_dir,
-                                   by_area=not by_pixel.value, min_area_ha=min_area.value)
+                                   by_area=not by_pixel.value, min_area_ha=min_area.value,
+                                   in_view=bool(search_box.value))
             if cell is not None:
                 lat_c, lon_c = highlight
                 gmaps = f"https://www.google.com/maps/search/?api=1&query={lat_c:.6f},{lon_c:.6f}"
