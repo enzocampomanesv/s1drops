@@ -9,9 +9,10 @@ OUT="$DATA_DIR/db-backups"
 mkdir -p "$OUT"
 stamp="$(date +%F)"
 docker exec s1drops-app-1 python -c "
-import sqlite3
+import os, sqlite3
 src = sqlite3.connect('/data/db/app.db'); dst = sqlite3.connect('/data/db/backup.tmp')
-src.backup(dst); dst.close(); src.close()"
+src.backup(dst); dst.close(); src.close()
+# The container runs as root; chmod here, the host user can't afterwards.
+os.chmod('/data/db/backup.tmp', 0o600)"
 mv "$DATA_DIR/db/backup.tmp" "$OUT/app-$stamp.db"
-chmod 600 "$OUT/app-$stamp.db"
 ls -1t "$OUT"/app-*.db | tail -n +31 | xargs -r rm --
