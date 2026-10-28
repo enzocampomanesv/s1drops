@@ -597,9 +597,16 @@ def VerdictPanel(cube, cube_key, target, records, user, photos_seen):
     with solara.Column(gap="4px", classes=["s1-tour-validate"],
                        style={"margin-top": "12px", "padding-top": "8px",
                               "border-top": "1px solid rgba(128,128,128,.3)"}):
+        # Asked about the place and the change's month, not "these photos": a
+        # verdict can come before any photos are fetched, or from other evidence.
+        when = target.get("date_after")
+        when = f" around {pd.Timestamp(when):%b %Y}" if when else ""
         with solara.Row(style={"align-items": "center"}, gap="2px"):
-            solara.Text("What do these photos show?", style={"font-weight": "600"})
+            solara.Text(f"What happened here{when}?", style={"font-weight": "600"})
             InfoTip(VALIDATION_INFO)
+        if not photos_seen:
+            solara.Text("Fetch photos with “Get photos”, or answer from other imagery or local "
+                        "knowledge.", style=line)
         with solara.Row(style={"flex-wrap": "wrap"}, gap="6px"):
             for v, label in validation.VERDICTS.items():
                 chosen = verdict.value == v
