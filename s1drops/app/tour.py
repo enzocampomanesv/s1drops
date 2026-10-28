@@ -17,11 +17,13 @@ import traitlets
 def steps_for(user) -> list[dict]:
     """The steps, in the order people should work. Plain text only."""
     if user is not None and user.approved:
-        validate = ("Record what you think happened here: demolition, another kind of "
-                    "change, or no real change, with the evidence you used.")
+        validate = ("Right under the photos: tap what you think happened here. One "
+                    "tap saves it; add evidence and a note under “Add details” if "
+                    "you like.")
     else:
-        validate = ("Partners and community members sign in to record what happened "
-                    "at each change. Ask the team for an account if you'd like to help.")
+        validate = ("Partners and community members sign in to record, right under "
+                    "the photos, what happened at each change. Ask the team for an "
+                    "account if you'd like to help.")
     return [
         {"title": "Welcome",
          "body": "This tool finds places where the radar signal from the Sentinel-1 "

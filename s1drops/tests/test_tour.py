@@ -18,4 +18,4 @@ def test_validation_step_depends_on_who_is_signed_in():
     anon = tour.steps_for(None)
     member = tour.steps_for(SimpleNamespace(approved=True))
     pick = lambda st: next(s["body"] for s in st if s.get("target") == ".s1-tour-validate")
-    assert "sign in" in pick(anon) and "Record" in pick(member)
+    assert "sign in" in pick(anon) and "tap" in pick(member)
