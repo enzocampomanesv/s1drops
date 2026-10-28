@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import OrderedDict
 import math
 import re
 import threading
@@ -1342,12 +1343,15 @@ def Explore(cache_dir: str = "./cache"):
     # Memo deps are plain values: numpy arrays can't be compared for equality.
     hot_deps = [active, pol, start, end, orbit_dir, tuple(sorted(lcz_classes)),
                 state.registry_version.value]
-    hot = solara.use_memo(
-        lambda: (logic.hotspot_with_local(cube, pol=pol, start=start, end=end,
-                                          direction=orbit_dir, lcz_classes=lcz_classes)
+    # The same pass also measures every track's drop at each cell's drop date, for
+    # the confidence labels' track check (no per-row reads of the cube).
+    hot_all = solara.use_memo(
+        lambda: (logic.hotspot_with_tracks(cube, pol=pol, start=start, end=end,
+                                           direction=orbit_dir, lcz_classes=lcz_classes)
                  if cube is not None else None),
         hot_deps,
     )
+    hot, track_drops = (hot_all[:4], hot_all[4]) if hot_all is not None else (None, None)
     overlay = solara.use_memo(
         lambda: (_overlay(cube, hot, pol, start, end, layer, lcz_classes, min_change.value)
                  if cube is not None else (None, [[0.0, 0.0], [0.0, 0.0]], None)),
@@ -1386,19 +1390,10 @@ def Explore(cache_dir: str = "./cache"):
                  if records else {}),
         [id(areas), id(records)])
 
-    # How sure we are about each listed change. Track agreement needs the detector
-    # run on each row's own series (as the chart does), so only for the rows on show.
-    det_method = METHOD_OPTIONS[method_label.value]
-    det_params = (dict(sensitivity=sensitivity.value, min_drop_db=min_change.value)
-                  if det_method == "pelt" else
-                  dict(window=window.value, min_drop_db=min_change.value))
+    # How sure we are about each listed change, for the rows on show.
     n_rows = 30 if cand_more.value else 10
-    tracks = solara.use_memo(
-        lambda: ({c["rank"]: confidence.tracks_for(
-            cube, c, pol=POL_OPTIONS[pol_label.value], orbit_dir=ORBIT_OPTIONS[orbit_label.value],
-            start=start, end=end, method=det_method, params=det_params)
-            for c in candidates[:n_rows]} if cube is not None else {}),
-        [id(areas), det_method, str(det_params), n_rows])
+    tracks = ({c["rank"]: confidence.tracks_from_steps(track_drops, c, min_change.value)
+               for c in candidates[:n_rows]} if track_drops is not None else {})
     show_verdicts = user is not None and user.approved
     ratings = {c["rank"]: confidence.rate(c, min_change.value, tracks.get(c["rank"]),
                                           summaries.get(c["rank"]), show_verdicts)
@@ -1451,14 +1446,23 @@ def Explore(cache_dir: str = "./cache"):
         else dict(window=window.value, min_drop_db=min_change.value, direction=drop_dir)
     )
 
-    series, results, rows = [], [], []
-    if area is not None:
-        series = logic.select_area_series(cube, area["cells"], pol, orbit_dir)
-    elif cell is not None:
-        series = logic.select_series(cube, cell[0], cell[1], pol, orbit_dir,
-                                     window=nbhd_window)
+    # Reading the place's series and running the detector take most of a click's
+    # time, and a click redraws the page more than once (select, then fly the map),
+    # as does any later toggle: reuse the result while its inputs are unchanged.
+    series, results, rows, det_key = [], [], [], None
     if cell is not None:
-        results = logic.run_detection(series, start=start, end=end, method=method, **params)
+        where = tuple(sorted(area["cells"])) if area is not None else (cell, nbhd_window)
+
+        def _detect():
+            ser = (logic.select_area_series(cube, area["cells"], pol, orbit_dir)
+                   if area is not None else
+                   logic.select_series(cube, cell[0], cell[1], pol, orbit_dir,
+                                       window=nbhd_window))
+            return ser, logic.run_detection(ser, start=start, end=end, method=method,
+                                            **params)
+        det_key = ("detect", active, state.registry_version.value, where, pol, orbit_dir,
+                   start, end, method, tuple(sorted(params.items())))
+        series, results = _reuse(det_key, _detect)
         rows = logic.drop_rows(results)
     events = findings.events(results)
 
@@ -1650,7 +1654,8 @@ def Explore(cache_dir: str = "./cache"):
                 if sel_rating is None and picked is not None:
                     sel_rating = confidence.rate(
                         picked, min_change.value,
-                        confidence.track_agreement(results, picked.get("date_after")),
+                        confidence.track_steps(series, picked.get("date_after"),
+                                               min_change.value, start=start, end=end),
                         summaries.get(picked["rank"]) or validation.summarise(records, picked),
                         show_verdicts)
                 with solara.Row(style={"align-items": "center", "flex-wrap": "wrap",
@@ -1702,13 +1707,13 @@ def Explore(cache_dir: str = "./cache"):
                                     f"{pol}-{orbit_dir}-{start}-{end}-"
                                     f"{method}-{sensitivity.value}-{min_change.value}-"
                                     f"{window.value}-{drop_dir}-{dark}-{per_track.value}")
-                        if per_track.value:
-                            fig = plots.figure(results, dark=dark)
-                        else:
-                            fig = plots.simple_figure(
-                                findings.relative_signal(results, events), events,
-                                min_change=min_change.value, dark=dark,
-                                table_drop=_table_drop(picked))
+                        fig = _reuse(
+                            ("figure", det_key, dark, per_track.value, min_change.value,
+                             str(_table_drop(picked))),
+                            lambda: plots.figure(results, dark=dark) if per_track.value else
+                            plots.simple_figure(findings.relative_signal(results, events),
+                                                events, min_change=min_change.value,
+                                                dark=dark, table_drop=_table_drop(picked)))
                         ResponsiveFigure(fig).key(plot_key)
                 SectionHeader("Detected changes", drops_open,
                               info=FINDINGS_INFO).key("hdr-drops")
@@ -1737,6 +1742,28 @@ def Explore(cache_dir: str = "./cache"):
                                           f"{start}_{end}_series.csv"),
                                 label="Download signal (CSV)",
                             )
+
+
+_REUSED: "OrderedDict[tuple, object]" = OrderedDict()
+_REUSED_LOCK = threading.Lock()
+REUSE_SIZE = 48     # recent results kept, across all sessions
+
+
+def _reuse(key: tuple, make):
+    """`make()`, or its result from an earlier call with the same `key` (a small
+    least-recently-used store shared by all sessions). Keys name the area (and the
+    registry version, which changes when a cube is re-baked) plus every input that
+    changes the result."""
+    with _REUSED_LOCK:
+        if key in _REUSED:
+            _REUSED.move_to_end(key)
+            return _REUSED[key]
+    value = make()
+    with _REUSED_LOCK:
+        _REUSED[key] = value
+        while len(_REUSED) > REUSE_SIZE:
+            _REUSED.popitem(last=False)
+    return value
 
 
 def _display_rows(rows) -> pd.DataFrame:

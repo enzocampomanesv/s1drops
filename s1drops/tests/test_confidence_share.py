@@ -70,3 +70,43 @@ def test_report_is_a_one_page_pdf_without_names(tmp_path):
                                "after": {"candidates": []}, "before_idx": 0, "after_idx": 0})
     assert pdf.startswith(b"%PDF") and pdf.count(b"/Type /Page\n") <= 1
     assert b"Secret Person" not in pdf
+
+
+def test_fast_pelt_matches_ruptures_exactly():
+    import ruptures as rpt
+    from s1drops.analysis.detect import pelt_l2
+    rng = np.random.default_rng(1)
+    for _ in range(200):
+        n = int(rng.integers(5, 400))
+        x = rng.normal(0, rng.uniform(0.2, 2), n)
+        for k in rng.integers(0, n, rng.integers(0, 4)):
+            x[k:] += rng.normal(0, 4)
+        pen = float(rng.uniform(0.5, 30))
+        assert pelt_l2(x, pen) == rpt.Pelt(model="l2", min_size=2).fit(x).predict(pen=pen)
+
+
+def test_track_agreement_comes_from_each_tracks_own_drop():
+    # Three tracks over a 4x4 grid; the change covers two cells.
+    steps = np.full((3, 4, 4), np.nan, dtype="float32")
+    steps[0, 1, 1:3] = [5.0, 4.0]       # fell on track 1
+    steps[1, 1, 1:3] = [1.0, 0.5]       # barely moved on track 2
+    c = {"cells": [(1, 1), (1, 2)], "row": 1, "col": 1}
+    assert confidence.tracks_from_steps(steps, c, 2.5) == (1, 2)   # track 3: no data
+    assert confidence.tracks_from_steps(steps, {"row": 0, "col": 0}, 2.5) is None
+
+
+def test_hotspot_with_tracks_measures_every_track():
+    from s1drops.app import logic
+    from s1drops.tests.test_clusters import _grid
+    cube = _grid()
+    t, ny, nx = cube.sizes["time"], cube.sizes["y"], cube.sizes["x"]
+    vv = np.full((t, ny, nx), 0.1) * np.random.default_rng(0).uniform(0.9, 1.1, (t, ny, nx))
+    ro = cube["relative_orbit"].values
+    vv[30:, 2:4, 2:4] *= 0.1                      # -10 dB on both tracks from mid-year
+    vv[30:, 6, 6] = np.where(ro[30:] == 1, 0.01, 0.1)   # only track 1 sees this one
+    cube["vv"] = (("time", "y", "x"), vv)
+    mag, before, after, local, steps = logic.hotspot_with_tracks(cube)
+    assert steps.shape == (2, ny, nx)
+    both = {"cells": [(2, 2), (2, 3), (3, 2), (3, 3)], "row": 2, "col": 2}
+    assert confidence.tracks_from_steps(steps, both, 3.0) == (2, 2)
+    assert confidence.tracks_from_steps(steps, {"row": 6, "col": 6}, 3.0) == (1, 2)

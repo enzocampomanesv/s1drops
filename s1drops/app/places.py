@@ -2,7 +2,8 @@
 
 Nominatim's usage policy asks for at most one request per second, an identifying
 User-Agent, and caching of results. So lookups are serialised behind one lock with
-a minimum interval, and every name is cached on disk in `<cache_dir>/placenames.json`
+a minimum interval (a separate, short-held lock guards the cache, so reading a
+cached name never waits behind a request in progress), and every name is cached on disk in `<cache_dir>/placenames.json`
 keyed by coordinates rounded to ~100 m — a site is only ever looked up once, even
 across restarts. Failures (e.g. offline) return None and are not cached, so they
 are retried on a later visit.
@@ -37,7 +38,8 @@ _LOCAL = ("neighbourhood", "quarter", "suburb", "hamlet", "village", "residentia
           "city_block", "allotments", "isolated_dwelling")
 _AREA = ("city", "county", "municipality", "town", "state_district", "state")
 
-_lock = threading.Lock()
+_lock = threading.Lock()            # the in-memory caches (held only briefly)
+_request_lock = threading.Lock()    # one Nominatim request at a time
 _last_request = 0.0
 _caches: Dict[str, Dict[str, str]] = {}
 
@@ -102,11 +104,11 @@ def lookup(cache_dir, lat: float, lon: float) -> Optional[str]:
     thread. Returns None when the lookup fails.
     """
     global _last_request
-    with _lock:
-        cache = _cache(cache_dir)
-        k = _key(lat, lon)
-        if k in cache:
-            return cache[k]
+    k = _key(lat, lon)
+    with _request_lock:
+        with _lock:
+            if k in (cache := _cache(cache_dir)):     # found while we queued
+                return cache[k]
         wait = _last_request + MIN_INTERVAL_S - time.monotonic()
         if wait > 0:
             time.sleep(wait)
@@ -115,11 +117,13 @@ def lookup(cache_dir, lat: float, lon: float) -> Optional[str]:
             name = name_from_result(_fetch(lat, lon), lat, lon)
         except Exception:  # noqa: BLE001 — offline / rate-limited / bad reply
             return None
-        cache[k] = name
+        with _lock:
+            cache[k] = name
+            text = json.dumps(cache, indent=0, sort_keys=True)
         path = Path(cache_dir) / CACHE_NAME
         tmp = path.with_suffix(".tmp")
         try:
-            tmp.write_text(json.dumps(cache, indent=0, sort_keys=True), encoding="utf-8")
+            tmp.write_text(text, encoding="utf-8")
             tmp.replace(path)
         except OSError:
             pass  # the in-memory cache still serves this session

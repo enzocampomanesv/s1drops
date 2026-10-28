@@ -3,8 +3,8 @@
 Two methods, each run per series (one look geometry) on the NaN-dropped
 subsequence, with detected events mapped back to real dates:
 
-- PELT (data-driven default): ruptures mean-shift changepoints with an
-  l2 cost. The penalty is auto-scaled to each series' own noise so a single
+- PELT (data-driven default): mean-shift changepoints with an l2 cost, as
+  ruptures computes them (`pelt_l2` reproduces its search exactly, faster). The penalty is auto-scaled to each series' own noise so a single
   `sensitivity` knob works across cells (higher sensitivity -> more, smaller
   changepoints). A changepoint is reported only if the pre->post level falls by
   at least `min_drop_db`.
@@ -67,6 +67,35 @@ def _passes(delta: float, thr: float, direction: str) -> bool:
     return abs(delta) >= thr
 
 
+def pelt_l2(x: np.ndarray, pen: float, *, min_size: int = 2, jump: int = 5) -> List[int]:
+    """Breakpoints of `x` by PELT with the L2 cost: the same search, admissible
+    points, pruning rule, tie-breaking and floating-point sums as
+    `ruptures.Pelt(model="l2", min_size, jump).fit(x).predict(pen)` (v1.1), so the
+    output is identical, without its per-step copies of every partial partition
+    (which made it ~100x slower on long series).
+    """
+    sig = np.asarray(x, dtype="float64").reshape(-1, 1)
+    n = sig.shape[0]
+    # best[t] = (total cost of the best partition of x[:t], its segment ends)
+    best = {0: (0.0, [])}
+    admissible: List[int] = []
+    for bkp in [k for k in range(0, n, jump) if k >= min_size] + [n]:
+        admissible.append((bkp - min_size) // jump * jump)
+        subs = []
+        for t in admissible:
+            if t not in best:
+                continue
+            tot, ends = best[t]
+            subs.append((tot + (sig[t:bkp].var(axis=0).sum() * (bkp - t) + pen), ends, t))
+        top = subs[0]
+        for sub in subs[1:]:          # first minimum, as min() picks
+            if sub[0] < top[0]:
+                top = sub
+        best[bkp] = (top[0], top[1] + [bkp])
+        admissible = [t for t, sub in zip(admissible, subs) if sub[0] <= top[0] + pen]
+    return sorted(best[n][1])
+
+
 def detect_pelt(
     series: Series,
     *,
@@ -75,8 +104,6 @@ def detect_pelt(
     direction: str = "drop",
     min_size: int = 2,
 ) -> DetectionResult:
-    import ruptures as rpt
-
     s = series.dropna()
     x = s.values_db.astype("float64")
     n = x.size
@@ -85,7 +112,7 @@ def detect_pelt(
 
     sigma = _robust_sigma(x)
     penalty = (sigma ** 2) * np.log(n) / max(sensitivity, 1e-6)
-    bkps = rpt.Pelt(model="l2", min_size=min_size).fit(x).predict(pen=penalty)
+    bkps = pelt_l2(x, penalty, min_size=min_size)
 
     bounds = [0] + list(bkps)                       # segment edges; bounds[-1] == n
     seg_means = [float(np.mean(x[bounds[i]:bounds[i + 1]])) for i in range(len(bounds) - 1)]

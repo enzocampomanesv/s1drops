@@ -27,7 +27,7 @@ from . import findings, logic, validation
 GOOD, OK, WEAK, NONE = "good", "ok", "weak", "none"     # factor levels
 
 LEVELS = {   # label -> colour (reads on light and dark backgrounds)
-    "High": "#2e7d32", "Medium": "#f9a825", "Low": "#9e9e9e", "Too early": "#78909c",
+    "High": "#c62828", "Medium": "#f9a825", "Low": "#9e9e9e", "Too early": "#78909c",
     "Confirmed": validation.COLOURS["demolition"], "Ruled out": validation.COLOURS["none"],
     "Other change": validation.COLOURS["other"], "Disputed": validation.COLOURS["mixed"],
 }
@@ -141,13 +141,47 @@ def rate(c: dict, min_change: float, tracks: Optional[Tuple[int, int]] = None,
     return Rating(label, factors)
 
 
-def tracks_for(cube, c: dict, *, pol, orbit_dir, start, end, method, params):
-    """Run the detector on a listed change's own series (as the chart does) and
-    return its track agreement."""
-    if "cells" in c:
-        series = logic.select_area_series(cube, c["cells"], pol, orbit_dir)
-    else:
-        series = logic.select_series(cube, c["row"], c["col"], pol, orbit_dir)
-    results = logic.run_detection(series, start=start, end=end, method=method,
-                                  **dict(params, direction="drop"))
-    return track_agreement(results, c.get("date_after"))
+def track_steps(series, date_after: Optional[str], min_change: float, *, start=None,
+                end=None, n: int = logic.LOCAL_PASSES) -> Optional[Tuple[int, int]]:
+    """(tracks whose signal fell by at least `min_change`, tracks with data) at the
+    change's date: per track, the mean of the (up to) `n` images before
+    `date_after` minus the mean of the `n` from it on, as the list's drop values
+    are measured. Tracks with fewer than two images on either side don't count."""
+    if not date_after:
+        return None
+    day = np.datetime64(str(date_after)[:10], "D")
+    lo = np.datetime64(str(start)[:10], "D") if start else None
+    hi = np.datetime64(str(end)[:10], "D") if end else None
+    seen = total = 0
+    for sr in series:
+        d = np.asarray(sr.dates).astype("datetime64[D]")
+        v = np.asarray(sr.values_db, dtype="float64")
+        keep = np.isfinite(v)
+        if lo is not None:
+            keep &= d >= lo
+        if hi is not None:
+            keep &= d <= hi
+        d, v = d[keep], v[keep]
+        before, after = v[d < day][-n:], v[d >= day][:n]
+        if len(before) < 2 or len(after) < 2:
+            continue
+        total += 1
+        seen += int(before.mean() - after.mean() >= min_change)
+    return (seen, total) if total else None
+
+
+def tracks_from_steps(steps: np.ndarray, c: dict,
+                      min_change: float) -> Optional[Tuple[int, int]]:
+    """Track agreement for a listed change from `logic.hotspot_with_tracks`' per-track
+    drops: a track saw it when the median drop over the change's cells reaches
+    `min_change`; tracks with no data there don't count."""
+    cells = c.get("cells") or [(c["row"], c["col"])]
+    rows, cols = np.array(cells).T
+    seen = total = 0
+    for track in steps:
+        v = track[rows, cols]
+        v = v[np.isfinite(v)]
+        if v.size:
+            total += 1
+            seen += int(np.median(v) >= min_change)
+    return (seen, total) if total else None

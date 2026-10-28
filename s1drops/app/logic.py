@@ -388,7 +388,7 @@ def _orbit_selections(cube: xr.Dataset, start, end, direction: str):
 def _hotspot(
     cube: xr.Dataset, *, pol: str = "vv", start=None, end=None, direction: str = "both",
     lcz_classes: Optional[Sequence[int]] = None, with_timing: bool = False,
-    with_local: bool = False,
+    with_local: bool = False, with_tracks: bool = False,
 ):
     """Per-cell max sustained drop (dB), reduced across matching relative orbits.
 
@@ -396,8 +396,11 @@ def _hotspot(
     winning drop — the last pre-drop and first post-drop pass of whichever orbit
     produced that maximum. Returns `magnitude`, or (magnitude, before, after).
     with_local=True (implies timing) appends the local drop at that same split
-    (see `_local_step`).
+    (see `_local_step`). with_tracks=True (implies local) also appends each
+    track's own local drop at the cell's drop date, shape (tracks, y, x): how far
+    the signal fell on every track, not only the one that won (NaN = no data).
     """
+    with_local = with_local or with_tracks
     with_timing = with_timing or with_local
     db = _pol_db_cube(cube, pol)
     shape = db.shape[1:]
@@ -427,7 +430,19 @@ def _hotspot(
     masked = _mask_nan(cube, best, lcz_classes)
     cleared = ~np.isfinite(masked)  # drop dates for cells the mask removed
     out = (masked, np.where(cleared, nat, before), np.where(cleared, nat, after))
-    return out + (np.where(cleared, np.nan, local),) if with_local else out
+    if with_local:
+        out += (np.where(cleared, np.nan, local),)
+    if with_tracks:
+        # Second pass over the stack already in memory: each track's drop at the
+        # date the winning track found (its first pass on or after that date).
+        steps = []
+        for sel in _orbit_selections(cube, start, end, direction):
+            d_sel = days[sel]
+            k = np.searchsorted(d_sel, np.where(np.isnat(after), d_sel[-1], after))
+            st = _local_step(db[sel], k)
+            steps.append(np.where(cleared | np.isnat(after), np.nan, st).astype("float32"))
+        out += (np.stack(steps) if steps else np.empty((0,) + shape, "float32"),)
+    return out
 
 
 def hotspot_layer(
@@ -460,6 +475,16 @@ def hotspot_with_local(
     cell's local drop, for the candidate list."""
     return _hotspot(cube, pol=pol, start=start, end=end, direction=direction,
                     lcz_classes=lcz_classes, with_local=True)
+
+
+def hotspot_with_tracks(
+    cube: xr.Dataset, *, pol: str = "vv", start=None, end=None, direction: str = "both",
+    lcz_classes: Optional[Sequence[int]] = None,
+):
+    """`hotspot_with_local` plus each track's drop at every cell's drop date
+    (tracks, y, x), for checking whether the tracks agree; one read of the stack."""
+    return _hotspot(cube, pol=pol, start=start, end=end, direction=direction,
+                    lcz_classes=lcz_classes, with_tracks=True)
 
 
 def cells_in_bounds(cube: xr.Dataset, box) -> np.ndarray:
