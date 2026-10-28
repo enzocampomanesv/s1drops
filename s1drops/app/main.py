@@ -1,7 +1,7 @@
-"""Solara entrypoint — two tabs: Explore (public) and Admin (gated).
+"""Solara entrypoint — Explore (public) and, for signed-in admins, an Admin tab.
 
 Run (the server module adds the sign-in pages in front of Solara):
-    export S1DROPS_ADMIN_PASSWORD='choose-one'      # enables the Admin tab
+    export S1DROPS_ADMIN_EMAILS='you@example.org'   # these accounts get the Admin tab
     export S1DROPS_CACHE_DIR='./cache'              # optional; defaults to ./cache
     uvicorn s1drops.app.server:app --port 8765
 """
@@ -12,7 +12,7 @@ import os
 import solara
 import solara.server.settings
 
-from . import accounts, admin, explore, layout, state
+from . import accounts, admin, explore, layout, state, tour
 
 CACHE_DIR = os.environ.get("S1DROPS_CACHE_DIR", "./cache")
 
@@ -48,16 +48,25 @@ def Page():
             state.is_admin.set(True)
     solara.use_effect(_share_user, [user])
 
+    # Only signed-in admins get the Admin tab; everyone else sees Explore alone.
+    show_admin = user is not None and user.is_admin
     tab = solara.use_reactive(0)
+    tour_run = solara.use_reactive(0)          # bumped by the Tutorial button
+    tour.Tour.element(steps=tour.steps_for(user), run=tour_run.value)
     with solara.AppBar():
+        solara.Button("Tutorial", icon_name="mdi-help-circle-outline", text=True,
+                      dark=True, classes=["s1-tour-help"],
+                      style={"text-transform": "none"},
+                      on_click=lambda: tour_run.set(tour_run.value + 1))
         UserMenu(user)
         solara.lab.ThemeToggle(enable_auto=False)
-        with solara.lab.Tabs(value=tab, align="left",
-                             background_color="#1e1e1e" if dark else "white",
-                             color="primary", slider_color="primary"):
-            solara.lab.Tab("Explore")
-            solara.lab.Tab("Admin")
-    if tab.value == 0:
+        if show_admin:
+            with solara.lab.Tabs(value=tab, align="left",
+                                 background_color="#1e1e1e" if dark else "white",
+                                 color="primary", slider_color="primary"):
+                solara.lab.Tab("Explore")
+                solara.lab.Tab("Admin")
+    if tab.value == 0 or not show_admin:
         explore.Explore(CACHE_DIR)
     else:
         admin.Admin(CACHE_DIR)
@@ -81,4 +90,6 @@ def UserMenu(user):
 
 @solara.component
 def Layout(children=[]):
-    return solara.AppLayout(children=children)
+    # Sidebar closed at first: the area picker and the list of changes on the right
+    # are where to start; the sidebar's settings are for fine-tuning.
+    return solara.AppLayout(children=children, sidebar_open=False)

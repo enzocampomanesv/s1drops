@@ -75,6 +75,13 @@ CSS = """
 .s1-left > div:has(> .s1-map) { height: auto !important; }
 .s1-s2-map { height: var(--s1-s2-h) !important; }
 
+/* "Start here": a slow glow around the list of changes until one is picked. */
+@keyframes s1-glow {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(33, 150, 243, 0.35); }
+    50% { box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.75); }
+}
+.s1-nudge { border-radius: 6px; animation: s1-glow 2.4s ease-in-out infinite; }
+
 /* Drag handles: invisible until hovered, with a short grip mark in the middle. */
 .s1-vsplit, .s1-hsplit, .s1-sidebar-handle { transition: background 0.15s; }
 .s1-vsplit {

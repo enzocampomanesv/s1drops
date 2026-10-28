@@ -700,28 +700,67 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
 
         threading.Thread(target=worker, daemon=True).start()
 
+    # Collapsed until it has something to show: opens by itself when the selected
+    # location has a detected change, closes again when it doesn't. Still openable
+    # by hand for "Choose dates".
+    has_change = cell is not None and bool(opts)
+    panel_open = solara.use_reactive(has_change)
+    solara.use_effect(lambda: panel_open.set(has_change), [str(cell), has_change])
+
     solara.Markdown("---")
-    with solara.Row(style={"align-items": "center"}, gap="4px"):
-        solara.Markdown("**Compare satellite photos (Sentinel-2)**")
-        InfoTip("True-colour images from just before and just after the change, "
-                "covering the selected location. With “Choose dates”, enter dates as "
-                "YYYY-MM-DD.")
-    with solara.ToggleButtonsSingle(value=mode):
-        solara.Button("Use detected change", value="cell")
-        solara.Button("Choose dates", value="manual")
+    with solara.Column(classes=["s1-tour-photos"], gap="0px"):
+        with solara.Row(style={"align-items": "center"}, gap="4px"):
+            SectionHeader("Compare satellite photos", panel_open,
+                          info="Sentinel-2 true-colour images from just before and just "
+                               "after the change, covering the selected location. With "
+                               "“Choose dates”, enter dates as YYYY-MM-DD.")
+            if cell is not None and not opts:
+                solara.Text("· no change detected here",
+                            style={"opacity": "0.6", "font-size": "13px"})
+        if panel_open.value:
+            OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
+                        win_days, do_fetch, running, status, error, result, result_open,
+                        before_idx, after_idx, cube_name)
+
+
+@solara.component
+def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
+                win_days, do_fetch, running, status, error, result, result_open,
+                before_idx, after_idx, cube_name):
+    # Controls in a narrow column on the left, photos beside them, so the photos
+    # start near the top instead of below a full-width form. Wraps on narrow screens.
+    with solara.Row(style={"align-items": "flex-start", "flex-wrap": "wrap"}, gap="16px"):
+        with solara.Column(style={"flex": "0 0 260px", "max-width": "260px"}, gap="4px"):
+            OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
+                            cloud_pct, win_days, do_fetch, running, status, error)
+        with solara.Column(style={"flex": "1 1 420px", "min-width": "0"}):
+            if result.value:
+                OpticalResult(result.value, result_open, before_idx, after_idx, cube_name)
+            elif not running.value:
+                solara.Markdown("_Photos appear here after “Get photos”._")
+
+
+@solara.component
+def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
+                    cloud_pct, win_days, do_fetch, running, status, error):
+    small = {"font-size": "12px", "letter-spacing": "0", "padding": "0 10px"}
+    with solara.ToggleButtonsSingle(value=mode, dense=True):
+        solara.Button("Detected change", value="cell", style=small)
+        solara.Button("Choose dates", value="manual", style=small)
     if mode.value == "cell":
         if not opts:
-            solara.Info("No change detected at this location — pick another, "
-                        "or switch to “Choose dates”.")
+            with solara.Row(style={"align-items": "center"}, gap="2px"):
+                solara.Text("No detected change here",
+                            style={"opacity": "0.7", "font-size": "13px"})
+                InfoTip("Pick another location on the map, or switch to "
+                        "“Choose dates” to compare photos from any two dates.")
         else:
             solara.Select("Change", value=sel_label, values=labels)
     else:
-        with solara.Row():
-            solara.InputText("Before date", value=man_before)
-            solara.InputText("After date", value=man_after)
-    with solara.Row():
-        solara.SliderInt("Max cloud %", value=cloud_pct, min=0, max=60)
-        solara.InputInt("Search ± days", value=win_days)
+        solara.InputText("Before date", value=man_before)
+        solara.InputText("After date", value=man_after)
+    solara.SliderInt("Max cloud %", value=cloud_pct, min=0, max=60)
+    solara.InputInt("Search ± days", value=win_days)
     solara.Button("Get photos", on_click=do_fetch, color="primary", disabled=running.value)
     if running.value:
         solara.ProgressLinear(True)
@@ -730,32 +769,34 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
     if error.value:
         solara.Error(error.value)
 
-    if result.value:
-        r = result.value
-        SectionHeader("Before / after photos", result_open)
-        if result_open.value:
-            # Remount the maps per fetch so Leaflet sizes correctly; key on the first
-            # candidate dates + resolution.
-            def _first(side):
-                cs = r[side].get("candidates", [])
-                return cs[0]["date"] if cs else "na"
-            key = f"opt-{_first('before')}-{_first('after')}-{r['resolution']}"
-            SyncedOpticalMaps(r["before"], r["after"], r.get("bounds"),
-                              before_idx, after_idx).key(key)
-            with solara.Row():
-                for side, idx in (("before", before_idx), ("after", after_idx)):
-                    cands = r[side].get("candidates", [])
-                    if cands:
-                        c = cands[min(idx.value, len(cands) - 1)]
-                        pct = int(round(c["cloud"] * 100))
-                        solara.FileDownload(
-                            (lambda p=c["tif_path"]: open(p, "rb").read()),
-                            filename=(f"{cube_name}_optical_{side}_"
-                                      f"{c['date']}_cloud{pct}pct.tif"),
-                            label=f"Download {side} GeoTIFF ({c['date']})",
-                        )
-            solara.Markdown(f"_Imagery at {r['resolution']:.0f} m · pan/zoom synced · "
-                            "◀/▶ to change scene._")
+
+@solara.component
+def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
+    SectionHeader("Before / after photos", result_open)
+    if not result_open.value:
+        return
+    # Remount the maps per fetch so Leaflet sizes correctly; key on the first
+    # candidate dates + resolution.
+    def _first(side):
+        cs = r[side].get("candidates", [])
+        return cs[0]["date"] if cs else "na"
+    key = f"opt-{_first('before')}-{_first('after')}-{r['resolution']}"
+    SyncedOpticalMaps(r["before"], r["after"], r.get("bounds"),
+                      before_idx, after_idx).key(key)
+    with solara.Row():
+        for side, idx in (("before", before_idx), ("after", after_idx)):
+            cands = r[side].get("candidates", [])
+            if cands:
+                c = cands[min(idx.value, len(cands) - 1)]
+                pct = int(round(c["cloud"] * 100))
+                solara.FileDownload(
+                    (lambda p=c["tif_path"]: open(p, "rb").read()),
+                    filename=(f"{cube_name}_optical_{side}_"
+                              f"{c['date']}_cloud{pct}pct.tif"),
+                    label=f"Download {side} GeoTIFF ({c['date']})",
+                )
+    solara.Markdown(f"_Imagery at {r['resolution']:.0f} m · pan/zoom synced · "
+                    "◀/▶ to change scene._")
 
 
 _TH = "cursor:pointer;user-select:none;white-space:nowrap"
@@ -1256,10 +1297,7 @@ def Explore(cache_dir: str = "./cache"):
         focus.set((c["lat"], c["lon"], zoom))
 
     with solara.Sidebar():
-        solara.Markdown("**Area and period**")
-        solara.Select("Area", value=[k for k, v in cube_labels.items() if v == active][0],
-                      values=list(cube_labels),
-                      on_value=lambda lbl: (cube_key.set(cube_labels[lbl]), clicked.set(None)))
+        solara.Markdown("**Period**")
         solara.Select("Period", value=period, values=period_options, on_value=pick_period)
         with WithInfo(f"{hi - lo + 1} of {n} satellite passes fall in this range. Drag "
                       "either end to narrow the period analysed."):
@@ -1358,16 +1396,12 @@ def Explore(cache_dir: str = "./cache"):
             # children present) doesn't shift positions and remount its siblings.
             # Without this, toggling a collapse remounts the plot and table. Bodies are
             # wrapped in keyed columns so reconciliation is fully key-based.
-            if cell is None:
-                with solara.Row(style={"align-items": "center"}, gap="4px").key("intro"):
-                    solara.Text("Pick a place from the list or click the map.")
-                    InfoTip(
-                        "**How to read this map:** coloured cells are places where the "
-                        "radar signal dropped sharply and stayed low in the selected "
-                        "period, the signature of buildings being removed. Darker red "
-                        "means a bigger drop. Pick a place to see its history and compare "
-                        "satellite photos. A drop is a lead to check, not proof of an "
-                        "eviction.")
+            # Where to start: the area, then the list of changes under it.
+            with solara.Column(classes=["s1-tour-area"], gap="0px").key("area-pick"):
+                solara.Select("Area", value=[k for k, v in cube_labels.items() if v == active][0],
+                              values=list(cube_labels),
+                              on_value=lambda lbl: (cube_key.set(cube_labels[lbl]),
+                                                    clicked.set(None)))
             if click_note:
                 solara.Warning(click_note).key("click-note")
             SectionHeader(f"Strongest changes ({(start or '')[:4]}–{(end or '')[:4]}"
@@ -1375,7 +1409,9 @@ def Explore(cache_dir: str = "./cache"):
                           cand_open, info=_candidates_info(not by_pixel.value)
                           ).key("hdr-cand")
             if cand_open.value:
-                with solara.Column(gap="0px").key("body-cand"):
+                # Until something is picked, a soft glow says "start here".
+                cand_cls = ["s1-tour-cand"] + (["s1-nudge"] if cell is None else [])
+                with solara.Column(gap="0px", classes=cand_cls).key("body-cand"):
                     ViewSearch(search_box, map_view.value)
                     shown = candidates[:30 if cand_more.value else 10]
                     summaries = {c["rank"]: sm for c in shown
@@ -1390,6 +1426,15 @@ def Explore(cache_dir: str = "./cache"):
                             _chip("ref", "#455a64"),
                             f" Reference check: {hits} of these {len(shown)} match your "
                             "reference demolitions (admins only)."])
+            if cell is None:
+                with solara.Row(style={"align-items": "center"}, gap="4px").key("intro"):
+                    solara.Text("👆 Pick a change from the list to see what happened there.")
+                    InfoTip(
+                        "**How to read this map:** coloured cells are places where the "
+                        "radar signal dropped sharply and stayed low in the selected "
+                        "period, the signature of buildings being removed. Darker red "
+                        "means a bigger drop. You can also click any spot on the map. A "
+                        "drop is a lead to check, not proof of an eviction.")
             if cell is not None:
                 lat_c, lon_c = highlight
                 gmaps = f"https://www.google.com/maps/search/?api=1&query={lat_c:.6f},{lon_c:.6f}"
@@ -1419,7 +1464,7 @@ def Explore(cache_dir: str = "./cache"):
                 SectionHeader("Radar signal over time", plot_open,
                               info=chart_info).key("hdr-ts")
                 if plot_open.value:
-                    with solara.Column().key("body-ts"):
+                    with solara.Column(classes=["s1-tour-chart"]).key("body-ts"):
                         # Remount the plot when its content changes: Solara's FigurePlotly
                         # otherwise leaves the previous cell's drop-span shapes on the layout.
                         plot_key = (f"plot-{cell[0]}-{cell[1]}-{area and area['rank']}-"
@@ -1464,7 +1509,8 @@ def Explore(cache_dir: str = "./cache"):
                 SectionHeader("Validation", validate_open, info=VALIDATION_INFO
                               ).key("hdr-validate")
                 if validate_open.value:
-                    with solara.Column(gap="4px").key("body-validate"):
+                    with solara.Column(gap="4px", classes=["s1-tour-validate"]
+                                       ).key("body-validate"):
                         ValidationPanel(cube, active, picked, records, user)
 
 
