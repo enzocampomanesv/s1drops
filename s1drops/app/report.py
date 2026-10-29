@@ -98,7 +98,7 @@ def build(*, place: str, area_name: str, c: Dict, rating: "confidence.Rating",
     _drop_map(ax_map, cube, mag, c, resolution)
 
     # --- signal over time ---------------------------------------------------------
-    ax = fig.add_axes([0.09, 0.39, 0.86, 0.2])
+    ax = fig.add_axes([0.09, 0.42, 0.86, 0.17])      # legend below it ends ~0.37
     _signal_chart(ax, signal, events, c, min_change)
 
     # --- photos -------------------------------------------------------------------
@@ -215,7 +215,7 @@ def _signal_chart(ax, sig, events, c, min_change):
 def _photos(fig, photos):
     for i, side in enumerate(("before", "after")):
         cands = photos[side].get("candidates", [])
-        ax = fig.add_axes([0.06 + i * 0.46, 0.12, 0.42, 0.22])
+        ax = fig.add_axes([0.06 + i * 0.46, 0.115, 0.42, 0.21])   # titles end ~0.34
         ax.set_xticks([]); ax.set_yticks([])
         if not cands:
             ax.text(0.5, 0.5, f"No clear {side} photo found", ha="center", va="center",

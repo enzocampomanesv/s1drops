@@ -21,7 +21,7 @@ CSS = """
     --s1-sidebar: 380px;
     --s1-mapcol: 60%;
     --s1-map-h: 70vh;
-    --s1-s2-h: 420px;
+    --s1-s2-h: 340px;
 }
 /* Solara's drawer is `width: min-content` (min 400px), so it grows with its widest
    control while the main area is only offset by the minimum. Pin one width and

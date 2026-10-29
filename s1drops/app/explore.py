@@ -396,13 +396,14 @@ def _grey_canvas(dark: bool):
 
 
 @solara.component
-def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx):
+def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx, recenter_n=0):
     """Two before/after mini-maps (drag-resizable height) with pan/zoom synced via jslink.
 
     Each side offers up to N candidate scenes cycled with ◀/▶; flipping swaps only the
     ImageOverlay on the same geobox, so framing (and your zoom/pan) never changes.
     Images sit over a muted gray basemap (dark in dark mode) with the fetch-footprint
-    rectangle.
+    rectangle. Each change of `recenter_n` (the Recenter button, in the caller's
+    header) frames the photos again.
     """
     dark = bool(solara.lab.use_dark_effective())
     if bounds:
@@ -437,20 +438,12 @@ def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx):
                           on_click=lambda: idx.set(min(n - 1, idx.value + 1)),
                           disabled=(n == 0 or idx.value >= n - 1))
 
-    def recenter():
-        for el in (m1, m2):
-            w = solara.get_widget(el)
-            w.center = center
-            w.zoom = fit_zoom
-
-    with solara.Row():
-        solara.Button("Recenter", on_click=recenter, text=True, icon_name="mdi-crosshairs-gps")
     with solara.Columns([1, 1]):
-        with solara.Column():
+        with solara.Column(gap="2px"):
             m1 = ipyleaflet.Map.element(scroll_wheel_zoom=True,
                                         layout=Layout(height="420px", width="100%"))
             controls("before", before, before_idx)
-        with solara.Column():
+        with solara.Column(gap="2px"):
             m2 = ipyleaflet.Map.element(scroll_wheel_zoom=True,
                                         layout=Layout(height="420px", width="100%"))
             controls("after", after, after_idx)
@@ -489,6 +482,16 @@ def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx):
         c = selected(info, idx.value)
         if c and c.get("url"):
             w.add(ipyleaflet.ImageOverlay(url=c["url"], bounds=bounds, opacity=1.0))
+    # In an effect, not the button's handler: widgets can only be looked up while
+    # rendering ("no render context" otherwise).
+    def recenter():
+        if recenter_n:
+            for el in (m1, m2):
+                w = solara.get_widget(el)
+                w.center = center
+                w.zoom = fit_zoom
+    solara.use_effect(recenter, [recenter_n])
+
     solara.use_effect(lambda: swap(m1, before, before_idx), [before_idx.value])
     solara.use_effect(lambda: swap(m2, after, after_idx), [after_idx.value])
 
@@ -840,38 +843,49 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
     panel_open = solara.use_reactive(has_change)
     solara.use_effect(lambda: panel_open.set(has_change), [str(cell), has_change])
 
-    solara.Markdown("---")
+    solara.v.Divider(style_="margin: 4px 0 8px")
+    header = (panel_open, cell is not None and not opts)
     with solara.Column(classes=["s1-tour-photos"], gap="0px"):
-        with solara.Row(style={"align-items": "center"}, gap="4px"):
-            SectionHeader("Compare satellite photos", panel_open,
-                          info="Sentinel-2 true-colour images from just before and just "
-                               "after the change, covering the selected location. With "
-                               "“Choose dates”, enter dates as YYYY-MM-DD.")
-            if cell is not None and not opts:
-                solara.Text("· no change detected here",
-                            style={"opacity": "0.6", "font-size": "13px"})
-        if panel_open.value:
+        if panel_open.value:    # the header then heads the controls column
             OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
                         win_days, do_fetch, running, status, error, result, result_open,
-                        before_idx, after_idx, cube_name,
+                        before_idx, after_idx, cube_name, header=header,
                         verdict=(cube, cube_key, target, records, user, photos_seen))
+        else:
+            OpticalHeader(*header)
+
+
+@solara.component
+def OpticalHeader(panel_open, no_change=False):
+    with solara.Row(style={"align-items": "center", "flex-wrap": "wrap"}, gap="4px"):
+        SectionHeader("Compare satellite photos", panel_open,
+                      info="Sentinel-2 true-colour images from just before and just "
+                           "after the change, covering the selected location. With "
+                           "“Choose dates”, enter dates as YYYY-MM-DD.")
+        if no_change:
+            solara.Text("· no change detected here",
+                        style={"opacity": "0.6", "font-size": "13px"})
 
 
 @solara.component
 def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
                 win_days, do_fetch, running, status, error, result, result_open,
-                before_idx, after_idx, cube_name, verdict=()):
-    # Controls in a narrow column on the left, photos beside them, so the photos
-    # start near the top instead of below a full-width form. Wraps on narrow screens.
+                before_idx, after_idx, cube_name, header=None, verdict=()):
+    # Controls in a narrow column on the left under the panel's header, photos
+    # beside them starting level with that header, so nothing sits above the
+    # photos but their own title. Wraps on narrow screens.
     with solara.Row(style={"align-items": "flex-start", "flex-wrap": "wrap"}, gap="16px"):
-        with solara.Column(style={"flex": "0 0 260px", "max-width": "260px"}, gap="4px"):
+        with solara.Column(style={"flex": "0 0 280px", "max-width": "280px"}, gap="4px"):
+            if header:
+                OpticalHeader(*header)
             OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
                             cloud_pct, win_days, do_fetch, running, status, error)
-        with solara.Column(style={"flex": "1 1 420px", "min-width": "0"}):
+        with solara.Column(style={"flex": "1 1 420px", "min-width": "0"}, gap="4px"):
             if result.value:
                 OpticalResult(result.value, result_open, before_idx, after_idx, cube_name)
             elif not running.value:
-                solara.Markdown("_Photos appear here after “Get photos”._")
+                solara.Markdown("_Photos appear here after “Get photos”._",
+                                style={"line-height": "36px"})
             if verdict:     # right under the evidence it's about
                 VerdictPanel(*verdict)
 
@@ -908,7 +922,13 @@ def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
 
 @solara.component
 def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
-    SectionHeader("Before / after photos", result_open)
+    recenter_n = solara.use_reactive(0)
+    with solara.Row(style={"align-items": "center"}, gap="8px"):
+        SectionHeader("Before / after photos", result_open)
+        if result_open.value:
+            solara.Button("Recenter", text=True, small=True, icon_name="mdi-crosshairs-gps",
+                          style={"text-transform": "none", "letter-spacing": "0"},
+                          on_click=lambda: recenter_n.set(recenter_n.value + 1))
     if not result_open.value:
         return
     # Remount the maps per fetch so Leaflet sizes correctly; key on the first
@@ -918,8 +938,12 @@ def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
         return cs[0]["date"] if cs else "na"
     key = f"opt-{_first('before')}-{_first('after')}-{r['resolution']}"
     SyncedOpticalMaps(r["before"], r["after"], r.get("bounds"),
-                      before_idx, after_idx).key(key)
-    with solara.Row():
+                      before_idx, after_idx, recenter_n.value).key(key)
+    # One line under the photos: what they are, and their GeoTIFF downloads.
+    with solara.Row(style={"align-items": "center", "flex-wrap": "wrap"}, gap="4px"):
+        solara.Text(f"Imagery at {r['resolution']:.0f} m · pan/zoom synced · ◀/▶ to "
+                    "change scene · GeoTIFF:",
+                    style={"font-size": "13px", "opacity": "0.8", "font-style": "italic"})
         for side, idx in (("before", before_idx), ("after", after_idx)):
             cands = r[side].get("candidates", [])
             if cands:
@@ -929,10 +953,10 @@ def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
                     (lambda p=c["tif_path"]: open(p, "rb").read()),
                     filename=(f"{cube_name}_optical_{side}_"
                               f"{c['date']}_cloud{pct}pct.tif"),
-                    label=f"Download {side} GeoTIFF ({c['date']})",
-                )
-    solara.Markdown(f"_Imagery at {r['resolution']:.0f} m · pan/zoom synced · "
-                    "◀/▶ to change scene._")
+                    children=[solara.Button(side.capitalize(), icon_name="mdi-download",
+                                            text=True, small=True,
+                                            style={"text-transform": "none",
+                                                   "letter-spacing": "0"})])
 
 
 _TH = "cursor:pointer;user-select:none;white-space:nowrap"
