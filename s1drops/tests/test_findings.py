@@ -85,7 +85,7 @@ def test_photo_options_name_each_event_once_in_words():
     a = _res(1, ["2023-01-01"], [-7.0], [_drop("2023-02-15", "2023-02-27", -10.0)])
     b = _res(2, ["2023-01-01"], [-7.0], [_drop("2023-02-21", "2023-03-05", -8.0),
                                          _drop("2024-08-01", "2024-08-13", -3.0)])
-    opts = _photo_options([a, b], 2.5)
+    opts = _photo_options(findings.events([a, b]), 2.5)
     assert [o["label"] for o in opts] == ["Strong drop · Mar 2023", "Slight drop · Aug 2024"]
     assert (opts[0]["date_before"], opts[0]["date_after"]) == ("2023-02-15", "2023-03-05")
 

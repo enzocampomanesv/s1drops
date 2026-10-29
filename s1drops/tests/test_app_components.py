@@ -110,3 +110,26 @@ def test_optical_maps_basemap_follows_theme():
     finally:
         solara.lab.theme.dark_effective = None
         rc.close()
+
+
+def test_optical_maps_label_before_and_after_in_words():
+    import ipyvuetify as v
+    import numpy as np
+    import solara
+    from s1drops.app import explore
+
+    # Photo dates arrive as numpy strings from the fetch.
+    cand = lambda d, cloud: {"date": np.str_(d), "cloud": cloud, "url": None}  # noqa: E731
+    before = {"candidates": [cand("2023-12-21", 0.06), cand("2023-11-02", 0.1)]}
+    after = {"candidates": []}
+    idx_b, idx_a = solara.reactive(0), solara.reactive(0)
+    box, rc = solara.render(explore.SyncedOpticalMaps(
+        before, after, ((6.42, 3.38), (6.43, 3.40)), idx_b, idx_a), handle_error=False)
+    try:
+        heads = [w.children[0] for w in rc.find(v.Html, tag="b").widgets]
+        assert heads == ["Before", "After"]
+        spans = " ".join(str(w.children) for w in rc.find(v.Html, tag="span").widgets)
+        assert "21 Dec 2023" in spans
+        assert "probed" not in spans and "AOI" not in spans
+    finally:
+        rc.close()

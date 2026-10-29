@@ -417,36 +417,46 @@ def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx, recenter_n=0
         cands = info.get("candidates", [])
         return cands[min(idx, len(cands) - 1)] if cands else None
 
-    def cap(side, info, idx):
-        cands = info.get("candidates", [])
-        if not cands:
-            return f"_{side}: {info.get('note', 'no clear scene found')} " \
-                   f"(probed {info.get('probed', 0)})_"
-        i = min(idx, len(cands) - 1)
-        c = cands[i]
-        return (f"_{side}: S2 {c['date']} · {c['cloud'] * 100:.0f}% AOI cloud "
-                f"· probed {info.get('probed', '?')} · {i + 1}/{len(cands)}_")
+    def heading(side, info, idx):
+        """ "Before · 21 Dec 2023" over the photo."""
+        c = selected(info, idx.value)
+        when = f" · {pd.Timestamp(str(c['date'])):%d %b %Y}" if c else ""
+        solara.v.Html(tag="div", style_="font-size:16px;margin:2px 0", children=[
+            solara.v.Html(tag="b", children=[side]),
+            solara.v.Html(tag="span", style_="opacity:0.75", children=[when])])
 
-    def controls(side, info, idx):
-        n = len(info.get("candidates", []))
-        with solara.Row(style={"align-items": "center"}):
-            solara.Button(icon_name="mdi-chevron-left", icon=True,
+    def controls(info, idx):
+        """Under the photo: how cloudy it is and, when there are other clear
+        photos, arrows to flip through them."""
+        cands = info.get("candidates", [])
+        n = len(cands)
+        text = ((f"{cands[min(idx.value, n - 1)]['cloud'] * 100:.0f}% cloud"
+                 + (f" · photo {min(idx.value, n - 1) + 1} of {n}" if n > 1 else ""))
+                if n else "No clear photo found near this date")
+        style = {"font-size": "13px", "opacity": "0.8"}
+        if n <= 1:
+            solara.Text(text, style=style)
+            return
+        with solara.Row(style={"align-items": "center"}, gap="0px"):
+            solara.Button(icon_name="mdi-chevron-left", icon=True, small=True,
                           on_click=lambda: idx.set(max(0, idx.value - 1)),
-                          disabled=(n == 0 or idx.value <= 0))
-            solara.Markdown(cap(side, info, idx.value))
-            solara.Button(icon_name="mdi-chevron-right", icon=True,
+                          disabled=idx.value <= 0)
+            solara.Text(text, style=style)
+            solara.Button(icon_name="mdi-chevron-right", icon=True, small=True,
                           on_click=lambda: idx.set(min(n - 1, idx.value + 1)),
-                          disabled=(n == 0 or idx.value >= n - 1))
+                          disabled=idx.value >= n - 1)
 
     with solara.Columns([1, 1]):
         with solara.Column(gap="2px"):
+            heading("Before", before, before_idx)
             m1 = ipyleaflet.Map.element(scroll_wheel_zoom=True,
                                         layout=Layout(height="420px", width="100%"))
-            controls("before", before, before_idx)
+            controls(before, before_idx)
         with solara.Column(gap="2px"):
+            heading("After", after, after_idx)
             m2 = ipyleaflet.Map.element(scroll_wheel_zoom=True,
                                         layout=Layout(height="420px", width="100%"))
-            controls("after", after, after_idx)
+            controls(after, after_idx)
     layout.drag_handle("--s1-s2-h", target=".s1-s2-map")
 
     def setup():
@@ -731,14 +741,16 @@ def _verdict_layer(records) -> Dict:
         for r in latest.values()]}
 
 
-def _photo_options(results, min_change: float) -> List[Dict]:
-    """Detected changes to fetch photos for, strongest first, in the words of the
-    Detected changes table ("Strong drop · Mar 2023"). One option per merged event,
-    anchored on its first and last image so the photos bracket every track's view."""
+def _photo_options(events, min_change: float, place: str = "") -> List[Dict]:
+    """Changes to fetch photos for (the Detected changes table's events), strongest
+    first, in its words ("Strong drop · Mar 2023 · near Ijora"). One option per
+    event, anchored on its first and last image so the photos bracket every
+    track's view."""
     opts, seen = [], {}
-    for e in sorted(findings.events(results), key=lambda e: -abs(e.delta_db)):
+    for e in sorted(events, key=lambda e: -abs(e.delta_db)):
         label = (f"{findings.strength(e.delta_db, min_change)} "
-                 f"{'drop' if e.is_drop else 'rise'} · {pd.Timestamp(e.end):%b %Y}")
+                 f"{'drop' if e.is_drop else 'rise'} · {pd.Timestamp(e.end):%b %Y}"
+                 + (f" · {place}" if place else ""))
         seen[label] = seen.get(label, 0) + 1
         if seen[label] > 1:
             label += f" ({seen[label]})"
@@ -747,9 +759,9 @@ def _photo_options(results, min_change: float) -> List[Dict]:
 
 
 @solara.component
-def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
+def OpticalPanel(cube, cube_key, cell, events, cube_name, cache_dir,
                  default_start, default_end, footprint, min_change,
-                 picked=None, records=(), user=None, photos=None):
+                 picked=None, records=(), user=None, photos=None, place=""):
     """Fetch + show Sentinel-2 before/after imagery for a drop (on demand), and ask
     for a verdict on it underneath (`picked`: the listed change being looked at)."""
     mode = solara.use_reactive("cell")          # "cell" | "manual"
@@ -767,8 +779,20 @@ def OpticalPanel(cube, cube_key, cell, results, cube_name, cache_dir,
     own = (solara.use_reactive(None), solara.use_reactive(0), solara.use_reactive(0))
     result, before_idx, after_idx = photos or own
 
-    opts = _photo_options(results, min_change)
+    # The place's short name ("near Ijora", not "near Ijora, Apapa") keeps it short.
+    opts = _photo_options(events, min_change, (place or "").split(",")[0])
     labels = [o["label"] for o in opts]
+
+    # Photos belong to the place they were fetched for: picking another change
+    # clears them (and the photo outline on the map) rather than leave old ones up.
+    def _clear_photos():
+        if result.value is not None and result.value.get("cell") != str(cell):
+            result.set(None)
+            footprint.set(None)
+            before_idx.set(0)
+            after_idx.set(0)
+            error.set("")
+    solara.use_effect(_clear_photos, [str(cell)])
 
     def _fix_sel():
         if labels and sel_label.value not in labels:
@@ -875,7 +899,7 @@ def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
     # beside them starting level with that header, so nothing sits above the
     # photos but their own title. Wraps on narrow screens.
     with solara.Row(style={"align-items": "flex-start", "flex-wrap": "wrap"}, gap="16px"):
-        with solara.Column(style={"flex": "0 0 280px", "max-width": "280px"}, gap="4px"):
+        with solara.Column(style={"flex": "0 0 300px", "max-width": "300px"}, gap="4px"):
             if header:
                 OpticalHeader(*header)
             OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
@@ -893,6 +917,7 @@ def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
 @solara.component
 def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
                     cloud_pct, win_days, do_fetch, running, status, error):
+    advanced = solara.use_reactive(False)
     small = {"font-size": "12px", "letter-spacing": "0", "padding": "0 10px"}
     with solara.ToggleButtonsSingle(value=mode, dense=True):
         solara.Button("Detected change", value="cell", style=small)
@@ -909,8 +934,6 @@ def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
     else:
         solara.InputText("Before date", value=man_before)
         solara.InputText("After date", value=man_after)
-    solara.SliderInt("Max cloud %", value=cloud_pct, min=0, max=60)
-    solara.InputInt("Search ± days", value=win_days)
     solara.Button("Get photos", on_click=do_fetch, color="primary", disabled=running.value)
     if running.value:
         solara.ProgressLinear(True)
@@ -918,19 +941,20 @@ def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
             solara.Markdown(f"`{status.value[-1]}`")
     if error.value:
         solara.Error(error.value)
+    # Rarely changed: folded away under "Advanced", below the button.
+    solara.Button("Advanced", text=True, small=True,
+                  icon_name="mdi-chevron-up" if advanced.value else "mdi-chevron-down",
+                  style={"text-transform": "none", "letter-spacing": "0",
+                         "align-self": "flex-start"},
+                  on_click=lambda: advanced.set(not advanced.value))
+    if advanced.value:
+        solara.SliderInt("Max cloud %", value=cloud_pct, min=0, max=60)
+        solara.InputInt("Search ± days", value=win_days)
 
 
 @solara.component
 def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
     recenter_n = solara.use_reactive(0)
-    with solara.Row(style={"align-items": "center"}, gap="8px"):
-        SectionHeader("Before / after photos", result_open)
-        if result_open.value:
-            solara.Button("Recenter", text=True, small=True, icon_name="mdi-crosshairs-gps",
-                          style={"text-transform": "none", "letter-spacing": "0"},
-                          on_click=lambda: recenter_n.set(recenter_n.value + 1))
-    if not result_open.value:
-        return
     # Remount the maps per fetch so Leaflet sizes correctly; key on the first
     # candidate dates + resolution.
     def _first(side):
@@ -940,10 +964,13 @@ def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
     SyncedOpticalMaps(r["before"], r["after"], r.get("bounds"),
                       before_idx, after_idx, recenter_n.value).key(key)
     # One line under the photos: what they are, and their GeoTIFF downloads.
+    small = {"text-transform": "none", "letter-spacing": "0"}
     with solara.Row(style={"align-items": "center", "flex-wrap": "wrap"}, gap="4px"):
-        solara.Text(f"Imagery at {r['resolution']:.0f} m · pan/zoom synced · ◀/▶ to "
-                    "change scene · GeoTIFF:",
+        solara.Text(f"Sentinel-2 photos at {r['resolution']:.0f} m · the two move together",
                     style={"font-size": "13px", "opacity": "0.8", "font-style": "italic"})
+        solara.Button("Recenter", text=True, small=True, icon_name="mdi-crosshairs-gps",
+                      style=small, on_click=lambda: recenter_n.set(recenter_n.value + 1))
+        solara.Text("· GeoTIFF:", style={"font-size": "13px", "opacity": "0.8"})
         for side, idx in (("before", before_idx), ("after", after_idx)):
             cands = r[side].get("candidates", [])
             if cands:
@@ -1251,7 +1278,10 @@ VALIDATION_INFO = (
 
 FINDINGS_INFO = ("Strength compares the change with your minimum change setting "
                  "(strong = at least double it). A change seen by more tracks (the "
-                 "satellite views this spot from different angles) is more trustworthy.")
+                 "satellite views this spot from different angles) is more trustworthy. "
+                 "A change picked from Strongest changes is always listed here: that list "
+                 "comes from a scan of the whole map, and the stricter analysis of this "
+                 "place alone sometimes doesn't flag it by itself.")
 
 
 @solara.component
@@ -1489,6 +1519,22 @@ def Explore(cache_dir: str = "./cache"):
         series, results = _reuse(det_key, _detect)
         rows = logic.drop_rows(results)
     events = findings.events(results)
+    # The list comes from a map-wide scan; the chart's detector, run on this place
+    # alone, is stricter and can miss a change the list shows. Then the listed
+    # change is added here, so the chart, Detected changes and the photo panel
+    # never say "no change" about something picked from the list.
+    if picked and picked.get("date_after") and not any(
+            e.is_drop and abs((e.end - np.datetime64(picked["date_after"][:10], "D"))
+                              / np.timedelta64(1, "D")) <= validation.MATCH_DAYS
+            for e in events):
+        seen_total = (confidence.tracks_from_steps(track_drops, picked, min_change.value)
+                      if track_drops is not None else None) or (1, 1)
+        events = sorted(events + [findings.Event(
+            start=np.datetime64((picked.get("date_before") or picked["date_after"])[:10], "D"),
+            end=np.datetime64(picked["date_after"][:10], "D"),
+            delta_db=-abs(float(picked["drop_db"])),
+            tracks=max(seen_total[0], 1), total_tracks=max(seen_total[1], 1))],
+            key=lambda e: e.start)
 
     layer_options = [k for k, v in LAYER_OPTIONS.items() if v != "lcz" or has_lcz]
     if layer_label.value not in layer_options:
@@ -1608,12 +1654,14 @@ def Explore(cache_dir: str = "./cache"):
                     search_box=search_box.value,
                     validated=_verdict_layer(records) if records else None)
             layout.drag_handle("--s1-map-h", target=".s1-map")
-            OpticalPanel(cube=cube, cube_key=active, cell=cell, results=results,
+            OpticalPanel(cube=cube, cube_key=active, cell=cell, events=events,
                          cube_name=cube_name, cache_dir=cache_dir,
                          default_start=start, default_end=end,
                          footprint=optical_footprint,
                          min_change=min_change.value, picked=picked, records=records,
-                         user=user, photos=photos).key("optical-panel")
+                         user=user, photos=photos,
+                         place=(places.cached(cache_dir, *highlight) or "") if highlight
+                         else "").key("optical-panel")
         layout.drag_handle("--s1-mapcol")
         with solara.Column(classes=["s1-right"]):
             # Every direct child is keyed so collapsing a section (which changes the
