@@ -15,7 +15,7 @@ import threading
 import solara
 
 from . import state
-from ..cube import bake_or_extend
+from ..cube import bake_or_extend, refresh
 
 # Shared across all sessions of the server process.
 queue = solara.reactive([])           # list of job dicts (pending/running/done/failed)
@@ -37,6 +37,23 @@ def enqueue(*, label, bbox, geom, start, end, name, reduction, resolution, cache
         queue.set(queue.value + [job])
     _ensure_worker()
     return job["id"]
+
+
+def enqueue_update(cache_dir, trigger: str = "scheduled") -> int:
+    """Queue the monthly update of every area (see `cube.refresh`), unless one is
+    already waiting or running. Returns the job id (the existing one if any)."""
+    with _lock:
+        busy = next((j for j in queue.value if j["params"].get("kind") == "update"
+                     and j["status"] in ("pending", "running")), None)
+        if busy is None:
+            label = ("Update all areas with new passes"
+                     + (" (started by an admin)" if trigger == "manual" else " (monthly)"))
+            busy = {"id": next(_ids), "label": label, "status": "pending", "log": [],
+                    "result": "", "params": {"kind": "update", "cache_dir": cache_dir,
+                                             "trigger": trigger}}
+            queue.set(queue.value + [busy])
+    _ensure_worker()
+    return busy["id"]
 
 
 def remove(job_id: int) -> None:
@@ -87,6 +104,16 @@ def _drain() -> None:
             p = dict(job["params"])
             queue.set([{**j, "status": "running"} if j["id"] == jid else j
                        for j in queue.value])
+        if p.get("kind") == "update":
+            try:
+                results = refresh.update_all(
+                    p["cache_dir"], trigger=p["trigger"],
+                    progress=lambda m, _jid=jid: _append_log(_jid, m))
+                _patch(jid, status="done", result=" · ".join(results) or "No areas yet.")
+                state.registry_version.set(state.registry_version.value + 1)
+            except Exception as e:  # noqa: BLE001
+                _patch(jid, status="failed", result=f"Error: {e}")
+            continue
         try:
             entry, changed = bake_or_extend(
                 p["bbox"], p["start"], p["end"], name=p["name"], aoi_geom=p["geom"],

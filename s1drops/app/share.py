@@ -9,18 +9,21 @@ the reader's own settings, so a link keeps working when the list is re-ranked.
 """
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 from urllib.parse import parse_qs, urlencode
 
 import ipyvuetify as vy
 import numpy as np
 import traitlets
 
+from ..cube.refresh import area_id
+
 
 def query(area: str, c: Dict, start: Optional[str], end: Optional[str], dates) -> str:
     """The query string for change (or spot) `c` in `area`; the period is only
     included when it isn't the whole record."""
-    q = {"area": area, "at": f"{c['lat']:.5f},{c['lon']:.5f}"}
+    # The area's stable name (no dates), so the link survives monthly updates.
+    q = {"area": area_id(area), "at": f"{c['lat']:.5f},{c['lon']:.5f}"}
     if len(dates) and (start, end) != (str(dates[0]), str(dates[-1])):
         q.update({"from": start, "to": end})
     return urlencode(q)
@@ -39,6 +42,14 @@ def parse(search: Optional[str]) -> Optional[Dict]:
     except ValueError:
         pass
     return out
+
+
+def find_area(link_area: str, keys: Sequence[str]) -> Optional[str]:
+    """The current key of a linked area: links name it without dates (older
+    links with them), and the dates change with every monthly update."""
+    want = area_id(link_area)
+    exact = next((k for k in keys if k == link_area), None)
+    return exact or next((k for k in keys if area_id(k) == want), None)
 
 
 def date_range(dates, start: Optional[str], end: Optional[str]):

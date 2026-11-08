@@ -24,11 +24,13 @@ from . import preview, webauth  # noqa: E402
 @asynccontextmanager
 async def lifespan(app):
     """Solara's start-up and shutdown, plus computing each area's default view in
-    the background so the first visitors don't wait for it."""
-    from . import explore
+    the background so the first visitors don't wait for it, and the monthly
+    update scheduler."""
+    from . import explore, updater
     cache_dir = os.environ.get("S1DROPS_CACHE_DIR", "./cache")
     threading.Thread(target=explore.warm_up, args=(cache_dir,), daemon=True,
                      name="warm-up").start()
+    updater.start(cache_dir)        # monthly update of every area with new passes
     async with solara_server.lifespan(app):
         yield
 

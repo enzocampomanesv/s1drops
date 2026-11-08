@@ -6,6 +6,8 @@ not by hiding the UI. Bakes run on a background thread with a live progress log.
 """
 from __future__ import annotations
 
+import time
+
 import json
 from typing import Optional, Tuple
 
@@ -263,6 +265,40 @@ def _status_tag(status: str) -> str:
 
 
 @solara.component
+def AreaUpdates(cache_dir: str):
+    """Monthly updates: when they last ran and what they did, and Update now."""
+    from ..cube import refresh
+    msg = solara.use_reactive("")
+    runs = refresh.load_state(cache_dir).get("history", [])
+    solara.Markdown("### Monthly updates")
+    solara.Markdown(
+        "Every area gets the newest satellite passes once a month (from the 1st, "
+        "after 02:00 UTC). The previous version of each area is kept in "
+        "`previous/` until the next update succeeds. **Update now** runs the same "
+        "update straight away; it then counts as this month's.")
+
+    def now():
+        try:
+            auth.guard_admin(state.is_admin.value)
+        except Exception as e:  # noqa: BLE001
+            msg.set(str(e))
+            return
+        bakequeue.enqueue_update(cache_dir, trigger="manual")
+        msg.set("Queued: see the bake queue for progress.")
+
+    solara.Button("Update now", icon_name="mdi-update", on_click=now, color="primary",
+                  outlined=True)
+    if msg.value:
+        solara.Info(msg.value)
+    if not runs:
+        solara.Markdown("_No update has run yet._")
+    for r in runs[:6]:
+        when = time.strftime("%d %b %Y %H:%M UTC", time.gmtime(r["at"]))
+        by = "by an admin" if r["trigger"] == "manual" else "monthly"
+        solara.Markdown(f"**{when}** ({by}):\n" + "\n".join(f"- {line}" for line in r["results"]))
+
+
+@solara.component
 def BakeQueuePanel():
     jobs = bakequeue.queue.value
     solara.Markdown("### Bake queue")
@@ -340,6 +376,8 @@ def Admin(cache_dir: str = "./cache"):
         BuildForm(cache_dir)
         solara.Markdown("---")
         ManageCubes(cache_dir)
+        solara.Markdown("---")
+        AreaUpdates(cache_dir)
         solara.Markdown("---")
         if account_admin:
             admin_users.FeedbackInbox()

@@ -1471,11 +1471,12 @@ def Explore(cache_dir: str = "./cache"):
         link = pending.value
         if not link:
             return
-        if link["area"] not in keys:
+        key = share.find_area(link["area"], keys)
+        if key is None:
             pending.set(None)
             return
-        if active != link["area"]:
-            cube_key.set(link["area"])
+        if active != key:
+            cube_key.set(key)
             return
         if not n:
             return
@@ -1697,8 +1698,9 @@ def Explore(cache_dir: str = "./cache"):
             show_verdicts)
     query = (share.query(active, picked or {"lat": highlight[0], "lon": highlight[1]},
                          start, end, dates) if highlight else "")
-    if state.page_link.value != (query or f"area={active}"):   # for feedback
-        state.page_link.set(query or f"area={active}")
+    here_link = query or f"area={share.area_id(active)}" if active else ""
+    if state.page_link.value != here_link:     # attached to feedback
+        state.page_link.set(here_link)
     dl_items = _download_items(
         cube=cube, cube_name=cube_name, area_label=area_label, areas=areas,
         track_drops=track_drops, summaries=summaries, show_verdicts=show_verdicts,

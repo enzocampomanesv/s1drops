@@ -122,6 +122,33 @@ docker compose exec app python -m s1drops.cli rescan --cache-dir /data/cache
 The queue lives in memory, so a restart drops queued and running jobs. Finished
 cubes are on disk and unaffected.
 
+### Monthly updates
+
+Every area gets the newest Sentinel-1 passes once a month: from the 1st, after
+02:00 UTC, the app queues an update job in the bake queue. Admin → **Monthly
+updates → Update now** queues the same job at any time (it then counts as that
+month's). The first automatic run is on the 1st of the month *after* the app
+first starts, never straight away.
+
+Each update writes the extended area as a new store, checks it (same grid, all
+old passes plus the new ones, real values), and only then switches to it. The
+previous version moves to `/srv/s1drops/cache/previous/` (one per area) and stays
+until the next update succeeds. A failed or empty update leaves the area as it
+was. Runs and their results are listed in the Admin tab and in
+`/srv/s1drops/cache/updates.json`.
+
+To roll an area back by hand (with the app stopped: `docker compose stop app`):
+
+```bash
+cd /srv/s1drops/cache
+mv Lagos_100m_2017-01-01_2026-11-03_nm.zarr /tmp/            # the update to undo
+mv previous/Lagos_100m_2017-01-01_2026-10-01_nm.zarr .
+rm registry.json                                             # rebuilt on next start
+docker compose start app
+```
+
+Shared links name an area without its dates, so they keep working after updates.
+
 ## 5. Backups
 
 **The accounts and verdicts database (`/srv/s1drops/db/app.db`) cannot be
