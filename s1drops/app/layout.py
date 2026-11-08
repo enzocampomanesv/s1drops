@@ -75,6 +75,11 @@ CSS = """
 .s1-left > div:has(> .s1-map) { height: auto !important; }
 .s1-s2-map { height: var(--s1-s2-h) !important; }
 
+/* The photo panel's change picker: let a long choice ("Moderate drop · Sep 2024 ·
+   near Ebute-Metta") wrap instead of being cut off. */
+.s1-tour-photos .v-select__selection--comma { white-space: normal; overflow: visible;
+    text-overflow: clip; line-height: 1.3; margin: 4px 0; }
+
 /* "Start here": a slow glow around the list of changes until one is picked. */
 @keyframes s1-glow {
     0%, 100% { box-shadow: 0 0 0 1px rgba(33, 150, 243, 0.35); }

@@ -46,7 +46,9 @@ def steps_for(user) -> list[dict]:
                  "list. Hover any (i) for more explanation."},
         {"target": ".s1-tour-photos", "title": "Compare satellite photos",
          "body": "Get photos from just before and just after the change to see what "
-                 "happened on the ground. Cloudy dates are skipped automatically."},
+                 "happened on the ground. Sentinel-2 photos are close to the change's "
+                 "date but blurry; switch to High-res for sharp images of single "
+                 "buildings, taken less often."},
         {"target": ".s1-tour-validate", "title": "Validation", "body": validate},
         {"target": ".v-app-bar__nav-icon", "title": "More settings",
          "body": "This menu holds the period analysed, map layers, how big a change "

@@ -12,7 +12,7 @@ import os
 import solara
 import solara.server.settings
 
-from . import accounts, admin, explore, layout, state, tour
+from . import accounts, admin, explore, feedback, layout, state, tour
 
 CACHE_DIR = os.environ.get("S1DROPS_CACHE_DIR", "./cache")
 
@@ -58,6 +58,7 @@ def Page():
                       dark=True, classes=["s1-tour-help", "s1-compact"],
                       style={"text-transform": "none"},
                       on_click=lambda: tour_run.set(tour_run.value + 1))
+        FeedbackButton(user)
         UserMenu(user)
         solara.lab.ThemeToggle(enable_auto=False)
         if show_admin:
@@ -70,6 +71,60 @@ def Page():
         explore.Explore(CACHE_DIR)
     else:
         admin.Admin(CACHE_DIR)
+
+
+@solara.component
+def FeedbackButton(user):
+    """Feedback in the title bar: a short form saved for the admins to read."""
+    open_ = solara.use_reactive(False)
+    kind = solara.use_reactive("bug")
+    message = solara.use_reactive("")
+    email = solara.use_reactive("")
+    status = solara.use_reactive(("", ""))      # (kind, text)
+    sent = solara.use_reactive(0)
+
+    def send():
+        if sent.value >= feedback.PER_SESSION:
+            status.set(("error", "Thanks! You've sent several messages already; please "
+                                 "try again later."))
+            return
+        try:
+            feedback.send(user, kind.value, message.value, email.value,
+                          state.page_link.value)
+        except ValueError as e:
+            status.set(("error", str(e)))
+            return
+        sent.set(sent.value + 1)
+        message.set("")
+        status.set(("ok", "Sent. Thank you!"))
+
+    labels = {v: k for k, v in feedback.KINDS.items()}
+    btn = solara.v.Btn(text=True, dark=True, class_="s1-compact", v_on="fb.on",
+                       style_="text-transform:none",
+                       children=[solara.v.Icon(left=True, children=["mdi-message-text-outline"]),
+                                 "Feedback"])
+    with solara.v.Dialog(v_model=open_.value, on_v_model=open_.set, max_width=480,
+                         v_slots=[{"name": "activator", "variable": "fb", "children": [btn]}]):
+        with solara.Card("Send feedback"):
+            solara.Markdown("Tell us about a problem, an idea or a question. It goes to "
+                            "the team running this site, with a link to what you're "
+                            "looking at now.")
+            solara.Select("What is it about?", value=feedback.KINDS[kind.value],
+                          values=list(labels), on_value=lambda v: kind.set(labels[v]))
+            solara.InputTextArea("Message", value=message, rows=5, continuous_update=True)
+            if user is None:
+                solara.InputText("Your email, if you'd like an answer (optional)",
+                                 value=email)
+            k, text = status.value
+            if k == "error":
+                solara.Error(text)
+            elif k == "ok":
+                solara.Success(text)
+            with solara.Row(justify="end"):
+                solara.Button("Close", text=True,
+                              on_click=lambda: (open_.set(False), status.set(("", ""))))
+                solara.Button("Send", color="primary", on_click=send,
+                              disabled=not message.value.strip())
 
 
 @solara.component

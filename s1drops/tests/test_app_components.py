@@ -71,7 +71,15 @@ def test_explore_renders_cube_and_picks_candidate(tmp_path, monkeypatch):
                        "reduction": "native_median", "bbox_ll": [3.40, 6.45, 3.45, 6.50]})
     write_cube(cube, tmp_path / "lagos_test_2024-01-01_2024-08-01_nm.zarr")
 
+    # Start-up computes the default view; the page then finds all of it ready.
+    from s1drops.app import explore
+    explore._SHARED.items.clear()
+    explore.warm_up(str(tmp_path))
+    warmed = set(explore._SHARED.items)
+    assert len(warmed) == 3                       # hotspot, map overlay, ranking
+
     box, rc = solara.render(Explore(str(tmp_path)), handle_error=False)
+    assert set(explore._SHARED.items) == warmed   # nothing recomputed
     try:
         rows = rc.find(v.Html, tag="tr").widgets
         assert len(rows) == 2, len(rows)        # header + the one change area

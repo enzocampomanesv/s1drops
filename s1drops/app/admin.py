@@ -342,6 +342,8 @@ def Admin(cache_dir: str = "./cache"):
         ManageCubes(cache_dir)
         solara.Markdown("---")
         if account_admin:
+            admin_users.FeedbackInbox()
+            solara.Markdown("---")
             admin_users.ManageUsers()
             solara.Markdown("---")
             admin_users.ReferenceData()

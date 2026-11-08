@@ -10,7 +10,7 @@ import time
 
 import solara
 
-from . import accounts, state, validation
+from . import accounts, feedback, state, validation
 
 
 def _link(path: str) -> str:
@@ -173,3 +173,39 @@ def ReferenceData():
                 version.set(version.value + 1)
                 state.validation_version.set(state.validation_version.value + 1)
             solara.Button("Delete", text=True, small=True, color="error", on_click=remove)
+
+
+@solara.component
+def FeedbackInbox():
+    """Messages from the Feedback button, newest first; mark them done when handled."""
+    user = state.user.value
+    show_done = solara.use_reactive(False)
+    version = solara.use_reactive(0)
+    msgs = solara.use_memo(lambda: feedback.inbox(user, show_done.value),
+                           [version.value, show_done.value])
+    solara.Markdown(f"**Feedback** ({sum(1 for m in msgs if not m.done)} to read)")
+    solara.Checkbox(label="Show handled ones too", value=show_done)
+    if not msgs:
+        solara.Markdown("_Nothing here yet._")
+    public = os.environ.get("S1DROPS_PUBLIC_URL", "").rstrip("/")
+    for m in msgs:
+        with solara.Card(style={"margin": "4px 0", "opacity": "0.6" if m.done else "1"}):
+            who = m.sender or (m.email and f"visitor ({m.email})") or "anonymous visitor"
+            solara.v.Html(tag="div", style_="font-size:13px;opacity:0.8", children=[
+                f"{feedback.KINDS.get(m.kind, m.kind)} · {who} · "
+                f"{time.strftime('%d %b %Y %H:%M', time.gmtime(m.created_at))} UTC"])
+            # Plain text, never rendered as markup.
+            solara.v.Html(tag="div", style_="white-space:pre-wrap;margin:4px 0",
+                          children=[m.message])
+            with solara.Row(style={"align-items": "center"}, gap="8px"):
+                if m.context:
+                    solara.v.Html(tag="a", children=["What they were looking at"],
+                                  attributes={"href": f"{public}/?{m.context}",
+                                              "target": "_blank", "rel": "noopener"})
+                if m.email:
+                    solara.v.Html(tag="a", children=["Reply by email"],
+                                  attributes={"href": f"mailto:{m.email}"})
+                solara.Button("Mark handled" if not m.done else "Mark unread", text=True,
+                              small=True,
+                              on_click=lambda m=m: (feedback.mark_done(user, m.id, not m.done),
+                                                    version.set(version.value + 1)))

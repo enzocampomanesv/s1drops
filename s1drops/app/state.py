@@ -3,6 +3,9 @@ import solara
 
 # Bumped after a bake/extend/delete so the Explore tab re-reads the registry.
 registry_version = solara.reactive(0)
+# What the visitor is looking at, as a share-link query (area, place, period):
+# attached to feedback so a report can be followed up.
+page_link = solara.reactive("")
 
 # Admin session flag: set by the shared admin password, or by signing in with an
 # admin account (see main.Page).

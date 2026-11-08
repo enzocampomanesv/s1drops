@@ -101,3 +101,34 @@ def test_google_routes_are_off_without_credentials():
     assert call("GET", "/auth/google")[0] == 404
     status, _, body, _ = call("GET", "/auth/login")
     assert "Sign in with Google" not in body
+
+
+def test_link_previews_name_the_shared_place(tmp_path, monkeypatch):
+    from s1drops.app import places, preview
+
+    async def page(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"content-type", b"text/html; charset=utf-8"),
+                                (b"content-length", b"40")]})
+        await send({"type": "http.response.body",
+                    "body": b"<html><head><title>x</title></head></html>"})
+
+    monkeypatch.setenv("S1DROPS_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("S1DROPS_PUBLIC_URL", "https://example.org")
+    monkeypatch.setattr(places, "cached", lambda d, lat, lon: "near Ijora, Apapa")
+    out = {}
+
+    async def send(msg):
+        out.setdefault(msg["type"], msg)
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": [(b"host", b"x")],
+             "query_string": b"area=lagos&at=6.46345,3.35949"}
+    asyncio.run(preview.PreviewTags(page)(scope, receive, send))
+    body = out["http.response.body"]["body"].decode()
+    assert 'og:title" content="Detected change near Ijora, Apapa"' in body
+    assert 'og:image" content="https://example.org/preview.png"' in body
+    length = dict(out["http.response.start"]["headers"])[b"content-length"]
+    assert int(length) == len(out["http.response.body"]["body"])

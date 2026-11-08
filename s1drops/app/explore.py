@@ -34,7 +34,7 @@ from ..config import (
 from ..cube import list_cubes, read_cube
 from ..cube.lcz import DEFAULT_CLASSES, LCZ_NAMES, LCZ_RGB
 from . import (accounts, confidence, findings, layout, logic, maputil, places, plots, render,
-               report, share, state, validation)
+               downloads, highres, report, share, state, validation)
 
 # Plain-language UI label -> internal code. The first entry of each is the default.
 POL_OPTIONS = {"VV (recommended)": "vv", "VH": "vh", "VV − VH difference": "vv_vh"}
@@ -506,6 +506,89 @@ def SyncedOpticalMaps(before, after, bounds, before_idx, after_idx, recenter_n=0
     solara.use_effect(lambda: swap(m2, after, after_idx), [after_idx.value])
 
 
+@solara.component
+def HighResResult(r, outline=None):
+    """Esri Wayback before/after imagery, with the line under it: what it is,
+    Recenter, and the same pair in Esri's own Wayback app."""
+    recenter_n = solara.use_reactive(0)
+    HighResMaps(r, outline, recenter_n.value).key(
+        f"hr-{(r.get('before') or {}).get('num')}-{(r.get('after') or {}).get('num')}")
+    small = {"text-transform": "none", "letter-spacing": "0"}
+    with solara.Row(style={"align-items": "center", "flex-wrap": "wrap"}, gap="4px"):
+        solara.Text("High-resolution imagery: Esri World Imagery Wayback",
+                    style={"font-size": "13px", "opacity": "0.8", "font-style": "italic"})
+        solara.Button("Recenter", text=True, small=True, icon_name="mdi-crosshairs-gps",
+                      style=small, on_click=lambda: recenter_n.set(recenter_n.value + 1))
+        solara.v.Btn(text=True, small=True, href=r["link"], target="_blank",
+                     style_="text-transform:none;letter-spacing:0",
+                     children=[solara.v.Icon(small=True, left=True,
+                                             children=["mdi-open-in-new"]),
+                               "Compare in Esri Wayback"])
+
+
+@solara.component
+def HighResMaps(r, outline, recenter_n=0):
+    """Two synced maps of Esri's imagery from before and after the change."""
+    dark = bool(solara.lab.use_dark_effective())
+    lat, lon = r["at"]
+    zoom = 17
+    if outline:     # frame the whole change area, with some room around it
+        from shapely.geometry import shape
+        w_, s_, e_, n_ = shape(outline["geometry"]).bounds
+        cy, cx = (s_ + n_) / 2, (w_ + e_) / 2
+        lat, lon = cy, cx
+        zoom = min(18, _fit_zoom([[s_, w_], [n_, e_]], viewport_px=300))
+    missing = {"before": "No high-resolution image from before this change",
+               "after": "No newer high-resolution image yet"}
+
+    def column(side):
+        s = r.get(side)
+        with solara.Column(gap="2px"):
+            when = f" · {pd.Timestamp(s['date']):%d %b %Y}" if s else ""
+            solara.v.Html(tag="div", style_="font-size:16px;margin:2px 0", children=[
+                solara.v.Html(tag="b", children=[side.capitalize()]),
+                solara.v.Html(tag="span", style_="opacity:0.75", children=[when])])
+            m = ipyleaflet.Map.element(center=(lat, lon), zoom=zoom, max_zoom=19,
+                                       scroll_wheel_zoom=True,
+                                       layout=Layout(height="420px", width="100%"))
+            solara.Text(highres.describe(s).split(" · ", 1)[1] if s else missing[side],
+                        style={"font-size": "13px", "opacity": "0.8"})
+        return m
+
+    with solara.Columns([1, 1]):
+        m1 = column("before")
+        m2 = column("after")
+    layout.drag_handle("--s1-s2-h", target=".s1-s2-map")
+
+    def setup():
+        w1, w2 = solara.get_widget(m1), solara.get_widget(m2)
+        for w, side in ((w1, "before"), (w2, "after")):
+            w.add_class("s1-s2-map")
+            s = r.get(side)
+            base = (ipyleaflet.TileLayer(
+                url=s["tiles"], max_zoom=19, max_native_zoom=19, name="Esri Wayback",
+                attribution=f"Imagery &copy; Esri, {s.get('source') or 'Esri partners'}")
+                if s else _grey_canvas(dark))
+            w.layers = (base,)
+            if outline:
+                w.add(ipyleaflet.GeoJSON(data=outline, style={
+                    "color": "#00e5ff", "weight": 2, "fill": False}))
+            else:
+                w.add(ipyleaflet.CircleMarker(location=(lat, lon), radius=8,
+                                              color="#00e5ff", fill=False, weight=2))
+        jslink((w1, "center"), (w2, "center"))
+        jslink((w1, "zoom"), (w2, "zoom"))
+    solara.use_effect(setup, [])
+
+    def recenter():
+        if recenter_n:
+            for el in (m1, m2):
+                w = solara.get_widget(el)
+                w.center = (lat, lon)
+                w.zoom = zoom
+    solara.use_effect(recenter, [recenter_n])
+
+
 def _when(ts: float) -> str:
     return pd.Timestamp(ts, unit="s").strftime("%d %b %Y")
 
@@ -620,7 +703,7 @@ def VerdictPanel(cube, cube_key, target, records, user, photos_seen):
     # They just looked at the photos: that's their evidence unless they say otherwise.
     def _prefill():
         if photos_seen and not evidence.value:
-            evidence.set(["s2"])
+            evidence.set([photos_seen if isinstance(photos_seen, str) else "s2"])
     solara.use_effect(_prefill, [key, photos_seen])
 
     line = {"font-size": "13px", "opacity": "0.8"}
@@ -761,10 +844,14 @@ def _photo_options(events, min_change: float, place: str = "") -> List[Dict]:
 @solara.component
 def OpticalPanel(cube, cube_key, cell, events, cube_name, cache_dir,
                  default_start, default_end, footprint, min_change,
-                 picked=None, records=(), user=None, photos=None, place=""):
-    """Fetch + show Sentinel-2 before/after imagery for a drop (on demand), and ask
-    for a verdict on it underneath (`picked`: the listed change being looked at)."""
+                 picked=None, records=(), user=None, photos=None, place="",
+                 at=None, outline=None):
+    """Fetch + show before/after imagery for a drop (on demand): Sentinel-2 photos,
+    or high-resolution Esri Wayback imagery (`at`: the change's lat/lon,
+    `outline`: its area, drawn on the high-res photos). Below them, ask for a
+    verdict on it (`picked`: the listed change being looked at)."""
     mode = solara.use_reactive("cell")          # "cell" | "manual"
+    source = solara.use_reactive("s2")          # "s2" | "highres"
     sel_label = solara.use_reactive("")
     man_before = solara.use_reactive(default_start)
     man_after = solara.use_reactive(default_end)
@@ -823,6 +910,20 @@ def OpticalPanel(cube, cube_key, cell, events, cube_name, cache_dir,
         def prog(m):
             status.set(status.value + [m])
 
+        def worker_highres():
+            try:
+                pair = highres.find_pair(cache_dir, at[0], at[1], before_a, after_a,
+                                         progress=prog)
+                result.set(dict(pair, kind="highres", at=at, cell=str(cell)))
+            except Exception as e:  # noqa: BLE001 — offline, or Esri unreachable
+                error.set(f"Couldn't reach the high-resolution imagery service ({e}).")
+            finally:
+                running.set(False)
+
+        if source.value == "highres":
+            threading.Thread(target=worker_highres, daemon=True).start()
+            return
+
         def worker():
             try:
                 r = optical.fetch_before_after(
@@ -857,7 +958,9 @@ def OpticalPanel(cube, cube_key, cell, events, cube_name, cache_dir,
     if target is None and cell is not None and sel is not None:
         target = {"row": cell[0], "col": cell[1], "date_before": sel["date_before"][:10],
                   "date_after": sel["date_after"][:10]}
-    photos_seen = bool(result.value) and result.value.get("cell") == str(cell)
+    # Which photos were looked at for this place, if any: the verdict's evidence.
+    photos_seen = ({"highres": "highres"}.get(result.value.get("kind"), "s2")
+                   if result.value and result.value.get("cell") == str(cell) else None)
 
     # Collapsed until it has something to show: opens by itself when the selected
     # location has a detected change (with the verdict buttons for validators, before
@@ -874,7 +977,8 @@ def OpticalPanel(cube, cube_key, cell, events, cube_name, cache_dir,
             OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
                         win_days, do_fetch, running, status, error, result, result_open,
                         before_idx, after_idx, cube_name, header=header,
-                        verdict=(cube, cube_key, target, records, user, photos_seen))
+                        verdict=(cube, cube_key, target, records, user, photos_seen),
+                        source=source, outline=outline)
         else:
             OpticalHeader(*header)
 
@@ -894,7 +998,8 @@ def OpticalHeader(panel_open, no_change=False):
 @solara.component
 def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
                 win_days, do_fetch, running, status, error, result, result_open,
-                before_idx, after_idx, cube_name, header=None, verdict=()):
+                before_idx, after_idx, cube_name, header=None, verdict=(), source=None,
+                outline=None):
     # Controls in a narrow column on the left under the panel's header, photos
     # beside them starting level with that header, so nothing sits above the
     # photos but their own title. Wraps on narrow screens.
@@ -903,9 +1008,11 @@ def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
             if header:
                 OpticalHeader(*header)
             OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
-                            cloud_pct, win_days, do_fetch, running, status, error)
+                            cloud_pct, win_days, do_fetch, running, status, error, source)
         with solara.Column(style={"flex": "1 1 420px", "min-width": "0"}, gap="4px"):
-            if result.value:
+            if result.value and result.value.get("kind") == "highres":
+                HighResResult(result.value, outline)
+            elif result.value:
                 OpticalResult(result.value, result_open, before_idx, after_idx, cube_name)
             elif not running.value:
                 solara.Markdown("_Photos appear here after “Get photos”._",
@@ -916,9 +1023,20 @@ def OpticalBody(mode, opts, sel_label, labels, man_before, man_after, cloud_pct,
 
 @solara.component
 def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
-                    cloud_pct, win_days, do_fetch, running, status, error):
+                    cloud_pct, win_days, do_fetch, running, status, error, source=None):
     advanced = solara.use_reactive(False)
     small = {"font-size": "12px", "letter-spacing": "0", "padding": "0 10px"}
+    if source is not None:
+        with solara.Row(style={"align-items": "center"}, gap="2px"):
+            with solara.ToggleButtonsSingle(value=source, dense=True):
+                solara.Button("Sentinel-2", value="s2", style=small)
+                solara.Button("High-res", value="highres", style=small)
+            InfoTip("**Sentinel-2:** free 10 m satellite photos every few days, so the "
+                    "dates sit right around the change, but buildings are blurry.\n\n"
+                    "**High-res:** Esri's 30-50 cm imagery, sharp enough to see single "
+                    "buildings, but updated only every year or few: you get the newest "
+                    "image before the change and the oldest one after it, with their "
+                    "capture dates.")
     with solara.ToggleButtonsSingle(value=mode, dense=True):
         solara.Button("Detected change", value="cell", style=small)
         solara.Button("Choose dates", value="manual", style=small)
@@ -941,6 +1059,8 @@ def OpticalControls(mode, opts, sel_label, labels, man_before, man_after,
             solara.Markdown(f"`{status.value[-1]}`")
     if error.value:
         solara.Error(error.value)
+    if source is not None and source.value == "highres":
+        return      # the settings below only apply to Sentinel-2 photos
     # Rarely changed: folded away under "Advanced", below the button.
     solara.Button("Advanced", text=True, small=True,
                   icon_name="mdi-chevron-up" if advanced.value else "mdi-chevron-down",
@@ -970,20 +1090,6 @@ def OpticalResult(r, result_open, before_idx, after_idx, cube_name):
                     style={"font-size": "13px", "opacity": "0.8", "font-style": "italic"})
         solara.Button("Recenter", text=True, small=True, icon_name="mdi-crosshairs-gps",
                       style=small, on_click=lambda: recenter_n.set(recenter_n.value + 1))
-        solara.Text("· GeoTIFF:", style={"font-size": "13px", "opacity": "0.8"})
-        for side, idx in (("before", before_idx), ("after", after_idx)):
-            cands = r[side].get("candidates", [])
-            if cands:
-                c = cands[min(idx.value, len(cands) - 1)]
-                pct = int(round(c["cloud"] * 100))
-                solara.FileDownload(
-                    (lambda p=c["tif_path"]: open(p, "rb").read()),
-                    filename=(f"{cube_name}_optical_{side}_"
-                              f"{c['date']}_cloud{pct}pct.tif"),
-                    children=[solara.Button(side.capitalize(), icon_name="mdi-download",
-                                            text=True, small=True,
-                                            style={"text-transform": "none",
-                                                   "letter-spacing": "0"})])
 
 
 _TH = "cursor:pointer;user-select:none;white-space:nowrap"
@@ -1305,6 +1411,7 @@ def Explore(cache_dir: str = "./cache"):
     clicked = solara.use_reactive(None)
     focus = solara.use_reactive(None)               # (lat, lon, zoom) to fly the map to
     date_idx = solara.use_reactive((0, 0))
+    range_of = solara.use_reactive(None)            # the area date_idx was set for
     lcz_sel = solara.use_reactive(LCZ_DEFAULT_SEL)
     min_change = solara.use_reactive(DEFAULT_MIN_CHANGE)          # applied (drives redraw)
     min_change_pending = solara.use_reactive(DEFAULT_MIN_CHANGE)  # live slider value
@@ -1349,6 +1456,7 @@ def Explore(cache_dir: str = "./cache"):
     def _reset_range():
         if n:
             date_idx.set((0, n - 1))
+            range_of.set(active)
     solara.use_effect(_reset_range, [active, n])
     # A searched map area belongs to the cube it was drawn on.
     solara.use_effect(lambda: search_box.set(None), [active])
@@ -1380,7 +1488,9 @@ def Explore(cache_dir: str = "./cache"):
         pending.set(None)
     solara.use_effect(_open_shared, [active, n, tuple(keys)])
 
-    lo, hi = date_idx.value
+    # Until the period is set for this area (just opened, or just switched), use
+    # the whole record: computing the map for a stale period first would be wasted.
+    lo, hi = date_idx.value if range_of.value == active else (0, max(n - 1, 0))
     if n:
         lo = max(0, min(lo, n - 1)); hi = max(lo, min(hi, n - 1))
         start, end = str(dates[lo]), str(dates[hi])
@@ -1399,15 +1509,19 @@ def Explore(cache_dir: str = "./cache"):
                 state.registry_version.value]
     # The same pass also measures every track's drop at each cell's drop date, for
     # the confidence labels' track check (no per-row reads of the cube).
+    # Shared by all visitors (and computed for the default view at start-up, see
+    # `warm_up`), so most page loads find it ready.
     hot_all = solara.use_memo(
-        lambda: (logic.hotspot_with_tracks(cube, pol=pol, start=start, end=end,
-                                           direction=orbit_dir, lcz_classes=lcz_classes)
+        lambda: (shared_hotspot(cube, entry, pol, start, end, orbit_dir, lcz_classes)
                  if cube is not None else None),
         hot_deps,
     )
     hot, track_drops = (hot_all[:4], hot_all[4]) if hot_all is not None else (None, None)
     overlay = solara.use_memo(
-        lambda: (_overlay(cube, hot, pol, start, end, layer, lcz_classes, min_change.value)
+        lambda: (_reuse(_hot_key(entry, pol, start, end, orbit_dir, lcz_classes)
+                        + ("overlay", layer, min_change.value),
+                        lambda: _overlay(cube, hot, pol, start, end, layer, lcz_classes,
+                                         min_change.value), store=_SHARED)
                  if cube is not None else (None, [[0.0, 0.0], [0.0, 0.0]], None)),
         hot_deps + [layer, min_change.value],
     )
@@ -1428,8 +1542,12 @@ def Explore(cache_dir: str = "./cache"):
                                                 end=end, direction=orbit_dir)
         return [dict(c, rank=i) for i, c in enumerate(found, 1)], labels
     areas, area_labels = solara.use_memo(
-        _rank, hot_deps + [min_change.value, min_area.value, by_pixel.value,
-                           str(search_box.value)])
+        lambda: (_reuse(_hot_key(entry, pol, start, end, orbit_dir, lcz_classes)
+                        + ("rank", min_change.value, min_area.value, by_pixel.value,
+                           str(search_box.value)), _rank, store=_SHARED)
+                 if hot is not None else ([], None)),
+        hot_deps + [min_change.value, min_area.value, by_pixel.value,
+                    str(search_box.value)])
     candidates = areas[:30]
 
     # Verdicts on this cube's ground, for signed-in approved users (admins also get
@@ -1514,8 +1632,8 @@ def Explore(cache_dir: str = "./cache"):
                                        window=nbhd_window))
             return ser, logic.run_detection(ser, start=start, end=end, method=method,
                                             **params)
-        det_key = ("detect", active, state.registry_version.value, where, pol, orbit_dir,
-                   start, end, method, tuple(sorted(params.items())))
+        det_key = ("detect", active, entry.created_at if entry else "", where, pol,
+                   orbit_dir, start, end, method, tuple(sorted(params.items())))
         series, results = _reuse(det_key, _detect)
         rows = logic.drop_rows(results)
     events = findings.events(results)
@@ -1565,6 +1683,32 @@ def Explore(cache_dir: str = "./cache"):
             zoom = min(zoom, _fit_zoom(c["bounds"], viewport_px=500))
         focus.set((c["lat"], c["lon"], zoom))
 
+    area_label = next((k for k, v in cube_labels.items() if v == active), active)
+    place = places.cached(cache_dir, *highlight) if highlight else None
+    # How sure we are about the selected change: the same label as the list, or
+    # worked out here for a spot that isn't listed.
+    sel_rating = ratings.get(picked["rank"]) if picked else None
+    if sel_rating is None and picked is not None:
+        sel_rating = confidence.rate(
+            picked, min_change.value,
+            confidence.track_steps(series, picked.get("date_after"), min_change.value,
+                                   start=start, end=end),
+            summaries.get(picked["rank"]) or validation.summarise(records, picked),
+            show_verdicts)
+    query = (share.query(active, picked or {"lat": highlight[0], "lon": highlight[1]},
+                         start, end, dates) if highlight else "")
+    if state.page_link.value != (query or f"area={active}"):   # for feedback
+        state.page_link.set(query or f"area={active}")
+    dl_items = _download_items(
+        cube=cube, cube_name=cube_name, area_label=area_label, areas=areas,
+        track_drops=track_drops, summaries=summaries, show_verdicts=show_verdicts,
+        user=user, cache_dir=cache_dir, min_change=min_change.value, pol=pol,
+        start=start, end=end, orbit_dir=orbit_dir, lcz_classes=lcz_classes,
+        cell=cell, picked=picked, place=place, rating=sel_rating, events=events,
+        results=results, series=series, hot=hot, resolution=resolution,
+        land_use=cell_lcz.split(" ", 1)[1] if cell_lcz else "", query=query,
+        records=records, photos=photos)
+
     with solara.Sidebar():
         solara.Markdown("**Period**")
         solara.Select("Period", value=period, values=period_options, on_value=pick_period)
@@ -1599,21 +1743,6 @@ def Explore(cache_dir: str = "./cache"):
             disabled=(min_change_pending.value == min_change.value
                       and min_area_pending.value == min_area.value),
         )
-        solara.FileDownload(
-            lambda: logic.hotspot_geojson(
-                cube, pol=pol, start=start, end=end, direction=orbit_dir,
-                lcz_classes=lcz_classes, min_value=min_change.value),
-            filename=(f"{cube_name}_hotspot_min{min_change.value:g}dB_"
-                      f"{_slug(pol)}_{start}_{end}.geojson"),
-            label="Download map cells (GeoJSON)",
-        )
-        if user is not None and user.can_review:
-            solara.FileDownload(lambda: validation.export(user, "csv"),
-                                filename="s1drops_verdicts.csv",
-                                label="Download all verdicts (CSV)")
-            solara.FileDownload(lambda: validation.export(user, "geojson"),
-                                filename="s1drops_verdicts.geojson",
-                                label="Download all verdicts (GeoJSON)")
         if has_lcz:
             solara.Markdown("---\n**Land-use filter**")
             with WithInfo("Local Climate Zones (coarse, ~100 m). Areas of other types "
@@ -1661,7 +1790,7 @@ def Explore(cache_dir: str = "./cache"):
                          min_change=min_change.value, picked=picked, records=records,
                          user=user, photos=photos,
                          place=(places.cached(cache_dir, *highlight) or "") if highlight
-                         else "").key("optical-panel")
+                         else "", at=highlight, outline=outline).key("optical-panel")
         layout.drag_handle("--s1-mapcol")
         with solara.Column(classes=["s1-right"]):
             # Every direct child is keyed so collapsing a section (which changes the
@@ -1669,11 +1798,13 @@ def Explore(cache_dir: str = "./cache"):
             # Without this, toggling a collapse remounts the plot and table. Bodies are
             # wrapped in keyed columns so reconciliation is fully key-based.
             # Where to start: the area, then the list of changes under it.
-            with solara.Column(classes=["s1-tour-area"], gap="0px").key("area-pick"):
-                solara.Select("Area", value=[k for k, v in cube_labels.items() if v == active][0],
-                              values=list(cube_labels),
-                              on_value=lambda lbl: (cube_key.set(cube_labels[lbl]),
-                                                    clicked.set(None)))
+            with solara.Row(style={"align-items": "center"}, gap="8px",
+                            classes=["s1-tour-area"]).key("area-pick"):
+                with solara.Column(style={"flex": "1 1 auto", "min-width": "0"}, gap="0px"):
+                    solara.Select("Area", value=area_label, values=list(cube_labels),
+                                  on_value=lambda lbl: (cube_key.set(cube_labels[lbl]),
+                                                        clicked.set(None)))
+                downloads.DownloadButton(dl_items, f"{cube_name}_{start}_{end}.zip")
             if click_note:
                 solara.Warning(click_note).key("click-note")
             SectionHeader(f"Strongest changes ({(start or '')[:4]}–{(end or '')[:4]}"
@@ -1712,7 +1843,6 @@ def Explore(cache_dir: str = "./cache"):
             if cell is not None:
                 lat_c, lon_c = highlight
                 gmaps = f"https://www.google.com/maps/search/?api=1&query={lat_c:.6f},{lon_c:.6f}"
-                place = places.cached(cache_dir, lat_c, lon_c)
                 what = (f"**Selected area** ({_ha(area['area_ha'])}, {area['n_cells']} "
                         f"pixels, outlined on the map)" if area else "**Selected location**")
                 solara.Markdown(
@@ -1720,49 +1850,11 @@ def Explore(cache_dir: str = "./cache"):
                     + (f" · {cell_lcz.split(' ', 1)[1]}" if cell_lcz else "")
                     + f" · [open in Google Maps]({gmaps})"
                 ).key("sel-loc")
-                # How sure we are, with the reasons on hover; the same label as the
-                # list, or worked out here for a spot that isn't listed.
-                sel_rating = ratings.get(picked["rank"]) if picked else None
-                if sel_rating is None and picked is not None:
-                    sel_rating = confidence.rate(
-                        picked, min_change.value,
-                        confidence.track_steps(series, picked.get("date_after"),
-                                               min_change.value, start=start, end=end),
-                        summaries.get(picked["rank"]) or validation.summarise(records, picked),
-                        show_verdicts)
                 with solara.Row(style={"align-items": "center", "flex-wrap": "wrap",
                                        "margin": "-8px 0 4px"}, gap="8px").key("sel-actions"):
                     if sel_rating is not None:
                         ConfidenceBadge(sel_rating, prefix="Confidence: ")
-                    query = share.query(active, picked or {"lat": lat_c, "lon": lon_c},
-                                        start, end, dates)
                     share.CopyLink.element(query=query)
-                    if picked is not None and sel_rating is not None:
-                        def _report(c=picked, rating=sel_rating, query=query):
-                            got, bi, ai = (r.value for r in photos)
-                            mine = got and got.get("cell") == str(cell)
-                            public = os.environ.get("S1DROPS_PUBLIC_URL", "").rstrip("/")
-                            return report.build(
-                                place=place or "", area_name=next((k for k, v in cube_labels.items()
-                                                       if v == active), active),
-                                c=c, rating=rating, events=events,
-                                signal=findings.relative_signal(results, events),
-                                min_change=min_change.value, cube=cube, mag=hot[0],
-                                resolution=resolution,
-                                land_use=cell_lcz.split(" ", 1)[1] if cell_lcz else "",
-                                link=f"{public}/?{query}" if public else "",
-                                photos=dict(got, before_idx=bi, after_idx=ai) if mine else None,
-                                verdicts=(validation.matching(records, c)
-                                          if show_verdicts else ()))
-                        solara.FileDownload(
-                            _report, label="Report (PDF)",
-                            filename=f"{cube_name}_change_{_slug(place or 'site')}_"
-                                     f"{(picked.get('date_after') or '')[:7]}.pdf",
-                            icon_name="mdi-file-pdf-box",
-                            children=[solara.Button("Report (PDF)", icon_name="mdi-file-pdf-box",
-                                                    text=True, small=True,
-                                                    style={"text-transform": "none",
-                                                           "letter-spacing": "0"})])
                 if per_track.value:
                     chart_info = (
                         "Backscatter in dB, one line per satellite track. Shaded bands "
@@ -1801,41 +1893,158 @@ def Explore(cache_dir: str = "./cache"):
                                 on_click=lambda: details_open.set(not details_open.value))
                             if details_open.value:
                                 solara.DataFrame(_display_rows(rows))
-                        with solara.Row(style={"flex-wrap": "wrap"}):
-                            solara.FileDownload(
-                                logic.drops_csv(results, cell=cell),
-                                filename=(f"{cube_name}_r{cell[0]}c{cell[1]}_{_slug(pol)}_"
-                                          f"drop{min_change.value:g}dB_{start}_{end}.csv"),
-                                label="Download changes (CSV)",
-                            )
-                            solara.FileDownload(
-                                logic.series_csv(series, start=start, end=end, cell=cell),
-                                filename=(f"{cube_name}_r{cell[0]}c{cell[1]}_{_slug(pol)}_"
-                                          f"{start}_{end}_series.csv"),
-                                label="Download signal (CSV)",
-                            )
 
 
-_REUSED: "OrderedDict[tuple, object]" = OrderedDict()
-_REUSED_LOCK = threading.Lock()
-REUSE_SIZE = 48     # recent results kept, across all sessions
+def _download_items(*, cube, cube_name, area_label, areas, track_drops, summaries,
+                    show_verdicts, user, cache_dir, min_change, pol, start, end, orbit_dir,
+                    lcz_classes, cell, picked, place, rating, events, results, series, hot,
+                    resolution, land_use, query, records, photos) -> List["downloads.Item"]:
+    """Everything the Download button offers, for this area and the selected change."""
+    It = downloads.Item
+    period = f"{start}_{end}"
+    kw = dict(min_change=min_change, track_drops=track_drops, summaries=summaries,
+              show_verdicts=show_verdicts, cache_dir=cache_dir)
+    here = f"This area: {area_label}"
+    items = [
+        It("changes_csv", here, "All changes found: table (CSV)",
+           f"{cube_name}_changes_{period}.csv",
+           lambda: downloads.changes_csv(areas, **kw), default=picked is None),
+        It("changes_geojson", here, "All changes found: outlines for GIS (GeoJSON)",
+           f"{cube_name}_changes_{period}.geojson",
+           lambda: downloads.changes_geojson(cube, areas, **kw)),
+        It("map_cells", here, "Map of drops: every pixel (GeoJSON)",
+           f"{cube_name}_map_min{min_change:g}dB_{_slug(pol)}_{period}.geojson",
+           lambda: logic.hotspot_geojson(cube, pol=pol, start=start, end=end,
+                                         direction=orbit_dir, lcz_classes=lcz_classes,
+                                         min_value=min_change)),
+    ]
+    if user is not None and user.can_review:
+        items += [
+            It("verdicts_csv", here, "All verdicts (CSV)", "s1drops_verdicts.csv",
+               lambda: validation.export(user, "csv")),
+            It("verdicts_geojson", here, "All verdicts (GeoJSON)", "s1drops_verdicts.geojson",
+               lambda: validation.export(user, "geojson")),
+        ]
+
+    name = (place or "").split(",")[0]
+    sel = ("Selected change: " + " · ".join(
+        p for p in (name, f"{pd.Timestamp(picked['date_after']):%b %Y}"
+                    if picked and picked.get("date_after") else "") if p)
+           if cell is not None else "Selected change")
+    none = "pick a change first"
+    tag = f"{cube_name}_{_slug(name or 'site')}"
+    if picked is not None:
+        tag += f"_{(picked.get('date_after') or '')[:7]}"
+
+    def _report():
+        got, bi, ai = (r.value for r in photos)
+        # Sentinel-2 photos only: Esri's imagery stays on its own map.
+        mine = got and got.get("cell") == str(cell) and got.get("kind") != "highres"
+        public = os.environ.get("S1DROPS_PUBLIC_URL", "").rstrip("/")
+        return report.build(
+            place=place or "", area_name=area_label, c=picked, rating=rating, events=events,
+            signal=findings.relative_signal(results, events), min_change=min_change,
+            cube=cube, mag=hot[0], resolution=resolution, land_use=land_use,
+            link=f"{public}/?{query}" if public and query else "",
+            photos=dict(got, before_idx=bi, after_idx=ai) if mine else None,
+            verdicts=validation.matching(records, picked) if show_verdicts else ())
+
+    has_change = picked is not None and rating is not None
+    items += [
+        It("report", sel, "Report: one page with map, chart and photos (PDF)",
+           f"{tag}_report.pdf", _report if has_change else None,
+           none if cell is None else "only for changes in the list", default=has_change),
+        It("signal", sel, "Radar signal over time (CSV)", f"{tag}_signal_{period}.csv",
+           (lambda: logic.series_csv(series, start=start, end=end, cell=cell))
+           if cell is not None else None, none),
+        It("drops", sel, "Detected changes (CSV)", f"{tag}_changes_{period}.csv",
+           (lambda: logic.drops_csv(results, cell=cell)) if cell is not None else None, none),
+    ]
+    got, bi, ai = (r.value for r in photos)
+    s2 = got if (got and got.get("cell") == str(cell) and got.get("kind") != "highres") else None
+    for side, idx in (("before", bi), ("after", ai)):
+        cands = (s2 or {}).get(side, {}).get("candidates", []) if s2 else []
+        c = cands[min(idx, len(cands) - 1)] if cands else None
+        items.append(It(
+            f"photo_{side}", sel, f"Sentinel-2 photo, {side} (GeoTIFF)",
+            f"{tag}_sentinel2_{side}_{c['date']}.tif" if c else f"{tag}_{side}.tif",
+            (lambda p=c["tif_path"]: open(p, "rb").read()) if c else None,
+            none if cell is None else "fetch Sentinel-2 photos first"))
+    return items
 
 
-def _reuse(key: tuple, make):
-    """`make()`, or its result from an earlier call with the same `key` (a small
-    least-recently-used store shared by all sessions). Keys name the area (and the
-    registry version, which changes when a cube is re-baked) plus every input that
-    changes the result."""
-    with _REUSED_LOCK:
-        if key in _REUSED:
-            _REUSED.move_to_end(key)
-            return _REUSED[key]
+class _Store:
+    """A small least-recently-used store shared by all sessions."""
+
+    def __init__(self, size: int):
+        self.size, self.items, self.lock = size, OrderedDict(), threading.Lock()
+
+
+_REUSED = _Store(48)    # per-place detection and charts (small)
+_SHARED = _Store(12)    # map-wide results: hotspot layers, overlays, rankings (larger)
+
+
+def _reuse(key: tuple, make, store: _Store = _REUSED):
+    """`make()`, or its result from an earlier call with the same `key`. Keys name
+    the area and when its cube was baked (so a re-bake never serves old results)
+    plus every input that changes the result. Two visitors asking at once may both
+    compute it; the later result simply replaces the earlier."""
+    with store.lock:
+        if key in store.items:
+            store.items.move_to_end(key)
+            return store.items[key]
     value = make()
-    with _REUSED_LOCK:
-        _REUSED[key] = value
-        while len(_REUSED) > REUSE_SIZE:
-            _REUSED.popitem(last=False)
+    with store.lock:
+        store.items[key] = value
+        while len(store.items) > store.size:
+            store.items.popitem(last=False)
     return value
+
+
+def _hot_key(entry, pol, start, end, orbit_dir, lcz_classes) -> tuple:
+    return ("hot", entry.key, entry.created_at, pol, start, end, orbit_dir,
+            tuple(sorted(lcz_classes)))
+
+
+def shared_hotspot(cube, entry, pol, start, end, orbit_dir, lcz_classes):
+    """`logic.hotspot_with_tracks` for these settings, computed once for everyone."""
+    return _reuse(_hot_key(entry, pol, start, end, orbit_dir, lcz_classes),
+                  lambda: logic.hotspot_with_tracks(cube, pol=pol, start=start, end=end,
+                                                    direction=orbit_dir,
+                                                    lcz_classes=lcz_classes),
+                  store=_SHARED)
+
+
+def warm_up(cache_dir: str) -> None:
+    """Compute every area's default view (whole period, default settings) ahead of
+    the first visitor: the map layer, its colours and the list of changes. Run in
+    the background at server start; a failure only means the first visit is slower."""
+    import logging
+    for entry in list_cubes(cache_dir):
+        try:
+            cube = read_cube(entry.path)
+            days = np.unique(np.asarray(cube["time"].values).astype("datetime64[D]"))
+            start, end = str(days[0]), str(days[-1])
+            pol, orbit_dir = POL_OPTIONS[next(iter(POL_OPTIONS))], \
+                ORBIT_OPTIONS[next(iter(ORBIT_OPTIONS))]
+            lcz = _classes_from_labels(LCZ_DEFAULT_SEL)
+            hot = shared_hotspot(cube, entry, pol, start, end, orbit_dir, lcz)[:4]
+            key = _hot_key(entry, pol, start, end, orbit_dir, lcz)
+            layer = LAYER_OPTIONS[next(iter(LAYER_OPTIONS))]
+            _reuse(key + ("overlay", layer, DEFAULT_MIN_CHANGE),
+                   lambda: _overlay(cube, hot, pol, start, end, layer, lcz,
+                                    DEFAULT_MIN_CHANGE), store=_SHARED)
+
+            def rank():     # as Explore's default ranking: areas, no map-area search
+                found, labels = logic.find_clusters(
+                    cube, *hot, min_value=DEFAULT_MIN_CHANGE,
+                    min_area_ha=logic.DEFAULT_MIN_AREA_HA, end=end, direction=orbit_dir)
+                return [dict(c, rank=i) for i, c in enumerate(found, 1)], labels
+            _reuse(key + ("rank", DEFAULT_MIN_CHANGE, logic.DEFAULT_MIN_AREA_HA, False,
+                          "None"), rank, store=_SHARED)
+            logging.getLogger(__name__).info("warmed up %s", entry.key)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception("warm-up failed for %s", entry.key)
 
 
 def _display_rows(rows) -> pd.DataFrame:

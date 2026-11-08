@@ -100,8 +100,9 @@ def connect() -> Iterator[sqlite3.Connection]:
             if path not in _initialised:
                 con.execute("PRAGMA journal_mode=WAL")
                 con.executescript(_SCHEMA)
-                from . import validation          # its tables share the database
+                from . import feedback, validation    # their tables share the database
                 con.executescript(validation.SCHEMA)
+                con.executescript(feedback.SCHEMA)
                 _initialised.add(path)
         yield con
         con.commit()
