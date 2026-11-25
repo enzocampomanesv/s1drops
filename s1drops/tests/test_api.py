@@ -84,7 +84,7 @@ def test_asking_for_access_and_approval(client, key):
     me = client.get("/api/me", headers=ada).json()
     assert me["approved"] and me["roleLabel"] == "Validator" and not me["canReview"]
     areas = client.get("/api/areas", headers=ada).json()
-    assert areas == [{"key": "lagos_100m", "name": "Lagos", "bounds": [3.3, 6.4, 3.5, 6.6], "start": "2015-01-01",
+    assert areas == [{"key": "lagos_100m", "id": "lagos_100m", "name": "Lagos", "bounds": [3.3, 6.4, 3.5, 6.6], "start": "2015-01-01",
                       "end": "2026-11-01", "resolution": 100.0, "fast": False, "passes": 500}]
     assert client.post("/api/access", headers=ada, json={"name": "Ada", "reason": "again"}).status_code == 409
     # disabled: out again

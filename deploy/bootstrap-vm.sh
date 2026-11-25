@@ -52,6 +52,6 @@ Done. Next:
   1. Set the admin password in $APP_DIR/deploy/.env.
   2. cd $APP_DIR/deploy && docker compose up -d --build
   3. sudo tailscale up --hostname s1drops      # open the printed login link
-     sudo tailscale funnel --bg 8765          # prints the public https URL
+     sudo tailscale funnel --bg 8766          # prints the public https URL
   4. (optional) scp lcz_cog.tif to $DATA_DIR/lcz/ and set S1DROPS_LCZ_PATH in .env.
 EOF

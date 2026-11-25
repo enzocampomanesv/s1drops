@@ -401,6 +401,24 @@ def request_access(uid: str, email: str, name: str, affiliation: str, reason: st
         return _user(con.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
 
 
+def preapprove(admin: User, email: str, role: str, name: str = "") -> User:
+    """An account for someone who hasn't signed in yet, with a role: they get it
+    when they first use the tool with this email, verified (space4all_user)."""
+    _require_admin(admin)
+    email = normalise_email(email)
+    if "@" not in email or " " in email:
+        raise ValueError("That email address doesn't look right.")
+    if role not in APPROVED:
+        raise ValueError("Choose validator, reviewer or admin.")
+    with connect() as con:
+        if con.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
+            raise ValueError("This email already has an account: change its role in the list.")
+        uid = con.execute(
+            "INSERT INTO users (email, name, role, created_at, approved_by, approved_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (email, name.strip(), role, time.time(), admin.id, time.time())).lastrowid
+        return _user(con.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone())
+
+
 def create_invite(admin: User, email: str, role: str) -> str:
     """A one-time link token that creates (or upgrades) an account with `role`."""
     _require_admin(admin)

@@ -62,8 +62,17 @@ _open_lock = threading.Lock()
 OPEN_MAX = 3
 
 
+def area_id(key: str) -> str:
+    """An area's name without its dates ("Lagos_100m_nm"): unchanged by monthly updates."""
+    from ..cube.refresh import area_id as _id
+
+    return _id(key)
+
+
 def open_area(cache_dir: Path, key: str) -> Area:
-    entry = next((e for e in list_cubes(cache_dir) if e.key == key), None)
+    """An area by its key or its stable id (what links use)."""
+    cubes = list_cubes(cache_dir)
+    entry = next((e for e in cubes if e.key == key), None) or next((e for e in cubes if area_id(e.key) == key), None)
     if entry is None:
         raise NotFound(f"No area {key!r}.")
     k = (entry.key, entry.created_at)
@@ -146,10 +155,15 @@ def _rating(r: Optional[confidence.Rating]) -> Optional[Dict]:
 
 
 def _summary(s: Optional[validation.Summary]) -> Optional[Dict]:
-    if s is None or not s.verdict:
+    if s is None or not getattr(s, "verdict", ""):
         return None
     return {"verdict": s.verdict, "label": "Disagree" if s.verdict == "mixed" else validation.SHORT[s.verdict],
             "count": s.count, "colour": validation.COLOURS[s.verdict]}
+
+
+def _reference(s: Optional[validation.Summary]) -> bool:
+    """Whether a change matches the admins' reference demolitions (admins only see them)."""
+    return bool(s and s.reference)
 
 
 def _land(code) -> str:
@@ -166,7 +180,7 @@ def change_json(c: Dict, *, min_change: float, cache_dir, rating=None, summary=N
         "strength": findings.strength(drop, min_change), "changeText": findings.change_text(drop),
         "recent": bool(c.get("recent")), "passesAfter": c.get("passes_after"),
         "land": _land(c.get("lcz")), "place": places.cached(cache_dir, c["lat"], c["lon"]),
-        "rating": _rating(rating), "verdict": _summary(summary),
+        "rating": _rating(rating), "verdict": _summary(summary), "reference": _reference(summary),
     }
     if "cells" in c:
         out.update(areaHa=c["area_ha"], cells=c["n_cells"], maxDropDb=c["max_drop_db"], bounds=c["bounds"])
@@ -192,8 +206,9 @@ def changes(a: Area, v: View, user, cache_dir, limit: int = LIST_MAX) -> Dict:
         rows.append(change_json(c, min_change=v.min_change, cache_dir=cache_dir, rating=rating, summary=sm))
     confirmed = sum(1 for c in found if (sm := validation.summarise(recs, c)) and sm.verdict == "demolition") \
         if recs else 0
+    refs = sum(1 for r in rows[:10] if r["reference"]) if any(r.source == "reference" for r in recs) else None
     return {
-        "start": start, "end": end, "byPixel": v.by_pixel,
+        "start": start, "end": end, "byPixel": v.by_pixel, "referenceMatches": refs,
         "total": len(found), "totalHa": round(sum(c.get("area_ha", cell_ha) for c in found), 2),
         "recent": sum(1 for c in found if c.get("recent")), "confirmed": confirmed,
         "items": rows,
@@ -334,6 +349,7 @@ def at(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir) -> 
         },
         "rows": [{k: (v_.item() if hasattr(v_, "item") else v_) for k, v_ in r.items()}
                  for r in logic.drop_rows(p["results"])],
+        "tracks": [_track(r) for r in p["results"] if len(r.series)],
         "photoOptions": [{"label": o["label"], "dateBefore": o["date_before"][:10], "dateAfter": o["date_after"][:10]}
                          for o in photo],
         "target": target_json(target) if target is not None else None,
@@ -347,7 +363,7 @@ PAGE_URL = "https://space4all.web.app/tools/demolitions/"
 
 def share_link(a: Area, lat: float, lon: float, start, end) -> str:
     """The page's link to this place (its hash: area/lat,lon/start,end)."""
-    return f"{PAGE_URL}#{a.entry.key}/{lat:.5f},{lon:.5f}/{start},{end}"
+    return f"{PAGE_URL}#{area_id(a.entry.key)}/{lat:.5f},{lon:.5f}/{start},{end}"
 
 
 def report_pdf(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir,
@@ -413,6 +429,17 @@ def place_download(a: Area, v: View, d: Detect, lat: float, lon: float, item: st
     raise ValueError("Unknown download.")
 
 
+def _track(r) -> Dict:
+    """One satellite track's radar series at a place (dB) and the drops found in it."""
+    s = r.series
+    ok = np.isfinite(s.values_db)
+    return {"label": s.label, "orbit": s.orbit_state,
+            "dates": [str(d) for d in s.dates[ok].astype("datetime64[D]")],
+            "db": [round(float(x), 2) for x in s.values_db[ok]],
+            "drops": [{"before": str(np.datetime64(d.date_before, "D")), "after": str(np.datetime64(d.date_after, "D")),
+                       "pre": round(float(d.pre_db), 2), "post": round(float(d.post_db), 2)} for d in r.drops]}
+
+
 def verdict_layer(a: Area, user) -> Dict:
     return ex._verdict_layer(records(a, user))
 
@@ -422,7 +449,7 @@ def area_json(a: Area) -> Dict:
     has_lcz = logic.has_lcz(cube)
     res = float(cube.attrs.get("resolution", e.resolution))
     return {
-        "key": e.key, "name": e.name.replace("_", " ").title(), "bounds": e.bbox_ll, "resolution": res,
+        "key": e.key, "id": area_id(e.key), "name": e.name.replace("_", " ").title(), "bounds": e.bbox_ll, "resolution": res,
         "days": [str(x) for x in a.days], "hasLcz": has_lcz,
         "lcz": [{"code": c, "name": n, "default": c in DEFAULT_CLASSES} for c, n in sorted(LCZ_NAMES.items())]
         if has_lcz else [],

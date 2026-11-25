@@ -151,3 +151,70 @@ def test_feedback(client):
     client.post(f"/api/admin/feedback/{inbox[0]['id']}", json={"done": True}, headers=client.h("tok-adm"))
     assert client.get("/api/admin/feedback", headers=client.h("tok-adm")).json() == []
     assert len(client.get("/api/admin/feedback?all=true", headers=client.h("tok-adm")).json()) == 1
+
+
+def test_areas_by_stable_id_and_tracks(client):
+    h = client.h("tok-val")
+    a = client.get("/api/areas", headers=h).json()[0]
+    assert a["id"] == "testtown_100m"                       # no dates in this key; a dated one loses them
+    from s1drops.api import view
+    assert view.area_id("Lagos_100m_2017-01-01_2026-10-01_nm") == "Lagos_100m_nm"
+    lat, lon = centre(_cube(), 5, 6)
+    p = client.get(f"/api/areas/{a['id']}/at?lat={lat}&lon={lon}", headers=h).json()
+    assert len(p["tracks"]) == 2 and len(p["tracks"][0]["dates"]) == len(p["tracks"][0]["db"]) == 30
+    assert p["tracks"][0]["drops"] and p["tracks"][0]["drops"][0]["pre"] > p["tracks"][0]["drops"][0]["post"]
+
+
+def test_place_search_through_the_server(client, monkeypatch):
+    import requests
+
+    asked = {}
+
+    class R:
+        def raise_for_status(self): pass
+        def json(self): return [{"display_name": "Makoko, Lagos", "lat": "6.49", "lon": "3.39", "boundingbox": ["6.48", "6.50", "3.38", "3.40"]}]
+
+    monkeypatch.setattr(requests, "get", lambda url, params, timeout, headers: asked.update(params) or R())
+    r = client.get("/api/search?q=makoko&bounds=3.3,6.4,3.5,6.6", headers=client.h("tok-val")).json()
+    assert r[0]["name"] == "Makoko, Lagos" and asked["bounded"] == "1" and asked["viewbox"] == "3.3,6.6,3.5,6.4"
+    assert client.get("/api/search?q=makoko", headers=client.h("tok-new")).status_code == 403
+
+
+def test_reference_marks_for_admins(client):
+    poly = {"type": "Polygon", "coordinates": [[[3.3655, 6.5076], [3.3685, 6.5076], [3.3685, 6.5104], [3.3655, 6.5104], [3.3655, 6.5076]]]}
+    fc = {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": poly, "properties": {"demo_year": 2023}}]}
+    client.post("/api/admin/references", json={"geojson": json.dumps(fc), "batch": "b"}, headers=client.h("tok-adm"))
+    adm = client.get("/api/areas/testtown_100m/changes", headers=client.h("tok-adm")).json()
+    val = client.get("/api/areas/testtown_100m/changes", headers=client.h("tok-val")).json()
+    assert adm["referenceMatches"] == 1 and adm["items"][0]["reference"] is True
+    assert val["referenceMatches"] is None and val["items"][0]["reference"] is False      # admins only
+
+
+def test_preapprove_by_email(client):
+    h = client.h("tok-adm")
+    assert client.post("/api/users", json={"email": "Zoe@Example.org", "role": "reviewer"}, headers=client.h("tok-val")).status_code == 403
+    assert client.post("/api/users", json={"email": "zoe@example.org", "role": "emperor"}, headers=h).status_code == 400
+    assert client.post("/api/users", json={"email": "Zoe@Example.org", "role": "reviewer", "name": "Zoe"}, headers=h).json()["role"] == "reviewer"
+    assert client.post("/api/users", json={"email": "zoe@example.org", "role": "validator"}, headers=h).status_code == 400   # exists
+    # Zoe signs in with that email: unverified, nothing; verified, she is a reviewer
+    PEOPLE["tok-zoe"] = ("u-zoe", "zoe@example.org", None)
+    try:
+        import s1drops.api.auth as a
+        a_decode = a.decode_token
+        a.decode_token = lambda t: {"sub": "u-zoe", "email": "zoe@example.org", "email_verified": False}
+        assert client.get("/api/me", headers=client.h("tok-zoe")).json()["role"] is None
+        a.decode_token = lambda t: {"sub": "u-zoe", "email": "zoe@example.org", "email_verified": True}
+        assert client.get("/api/me", headers=client.h("tok-zoe")).json()["role"] == "reviewer"
+    finally:
+        a.decode_token = a_decode
+        PEOPLE.pop("tok-zoe", None)
+
+
+def test_old_address_forwards_to_space4all(client):
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 301 and r.headers["location"] == "https://space4all.web.app/tools/demolitions/"
+    r = client.get("/?area=Lagos_100m_2017-01-01_2026-10-01_nm&at=6.49012,3.39054&from=2023-01-01&to=2023-12-31", follow_redirects=False)
+    assert r.headers["location"] == "https://space4all.web.app/tools/demolitions/#Lagos_100m_nm/6.49012,3.39054/2023-01-01,2023-12-31"
+    assert client.get("/auth/login", follow_redirects=False).headers["location"].endswith("/tools/demolitions/")
+    assert client.get("/api/nothing-here").status_code == 404
+    assert client.get("/api/health").json() == {"ok": True}

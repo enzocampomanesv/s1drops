@@ -10,6 +10,6 @@ cd "$APP_DIR"
 
 git pull --ff-only
 cd deploy
-docker compose up -d --build
+docker compose up -d --build --remove-orphans
 docker image prune -f
 docker compose ps

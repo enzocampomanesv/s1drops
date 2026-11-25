@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -107,7 +107,7 @@ def areas(_: Caller = Depends(approved)):
     out = []
     for e in list_cubes(cache_dir()):
         out.append({
-            "key": e.key, "name": e.name.replace("_", " ").title(), "bounds": e.bbox_ll,
+            "key": e.key, "id": view.area_id(e.key), "name": e.name.replace("_", " ").title(), "bounds": e.bbox_ll,
             "start": str(e.start)[:10], "end": str(e.end)[:10], "resolution": e.resolution,
             "fast": e.reduction == "overview_med", "passes": e.n_passes,
         })
@@ -190,6 +190,31 @@ def place(key: str, lat: float = Query(..., ge=-90, le=90), lon: float = Query(.
 def verdict_layer(key: str, c: Caller = Depends(approved)):
     """Validated places as GeoJSON, coloured by their latest verdict."""
     return view.verdict_layer(_area(key), c.user)
+
+
+@app.get("/api/search")
+def search_places(q: str = Query(..., min_length=2, max_length=200), bounds: Optional[str] = Query(None),
+                  _: Caller = Depends(approved)):
+    """Places by name (OpenStreetMap), preferring this area's box: the server asks,
+    so the visitor's browser sends nothing to OpenStreetMap."""
+    params = {"q": q, "format": "jsonv2", "limit": "8"}
+    if bounds:
+        try:
+            w, s, e, n = (float(x) for x in bounds.split(","))
+            params.update(viewbox=f"{w},{n},{e},{s}", bounded="1")
+        except ValueError:
+            pass
+    try:
+        import requests
+
+        r = requests.get("https://nominatim.openstreetmap.org/search", params=params, timeout=10,
+                         headers={"User-Agent": view.places.USER_AGENT})
+        r.raise_for_status()
+        hits = r.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail="Place search is not answering just now; try again.")
+    return [{"name": h.get("display_name", ""), "lat": float(h["lat"]), "lon": float(h["lon"]),
+             "bbox": [float(x) for x in h.get("boundingbox", [])] or None} for h in hits]
 
 
 @app.get("/api/place")
@@ -491,6 +516,25 @@ class RoleIn(BaseModel):
     role: str
 
 
+class AddUserIn(BaseModel):
+    email: str = Field(..., min_length=3, max_length=200)
+    role: str = "validator"
+    name: str = Field("", max_length=200)
+
+
+@app.post("/api/users")
+def add_user(body: AddUserIn, c: Caller = Depends(admin)):
+    """Approve someone in advance by email (what invite links did): they get the
+    role when they first sign in with that Space4All email, once verified."""
+    try:
+        u = accounts.preapprove(c.user, body.email, body.role, body.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except accounts.NotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return {"id": u.id, "email": u.email, "role": u.role}
+
+
 @app.put("/api/users/{user_id}/role")
 def set_role(user_id: int, body: RoleIn, c: Caller = Depends(admin)):
     if accounts.get_user(user_id) is None:
@@ -502,3 +546,25 @@ def set_role(user_id: int, body: RoleIn, c: Caller = Depends(admin)):
     except accounts.NotAllowed as e:
         raise HTTPException(status_code=403, detail=str(e))
     return {"id": user_id, "role": body.role}
+
+
+# ---- the old app's address (Solara, retired) forwards to the Space4All page ----
+
+from fastapi.responses import RedirectResponse  # noqa: E402
+from urllib.parse import parse_qs  # noqa: E402
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def old_address(path: str, request: Request):
+    """Everything outside /api: the page in Space4All. An old shared link
+    (?area=…&at=lat,lon&from=…&to=…) opens the same place there."""
+    if path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found.")
+    q = {k: v[0] for k, v in parse_qs(request.url.query).items()}
+    target = view.PAGE_URL
+    if q.get("area"):
+        area = view.area_id(q["area"])
+        at = q.get("at", "") if all(c in "0123456789.,-" for c in q.get("at", "")) else ""
+        period = f"{q['from']},{q['to']}" if q.get("from") and q.get("to") else ""
+        target += f"#{area}/{at}/{period}"
+    return RedirectResponse(target, status_code=301)

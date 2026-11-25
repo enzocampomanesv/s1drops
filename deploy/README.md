@@ -1,25 +1,32 @@
 # Always-on deployment
 
-Runs s1drops on a cloud VM so it stays up without your laptop. The default route
-costs nothing: an **Oracle Cloud Always Free** Arm VM, published with
-**Tailscale Funnel**.
+Runs the s1drops API on a cloud VM: the back end of Space4All's Demolition
+detection page, <https://space4all.web.app/tools/demolitions/>, where people
+sign in with their Space4All account. The default route costs nothing: an
+**Oracle Cloud Always Free** Arm VM, published with **Tailscale Funnel**.
 
 ```
-browser ──HTTPS──► Tailscale Funnel ◄──outbound── tailscaled (host) ──► 127.0.0.1:8765 ──► app
-                  s1drops.<tailnet>.ts.net         (VM, no open ports)                       │
-                                                                                            ▼
-                                                                         /srv/s1drops/cache  (cubes)
-                                                                         /srv/s1drops/lcz    (optional)
+space4all.web.app ──HTTPS──► Tailscale Funnel ◄──outbound── tailscaled (host) ──► 127.0.0.1:8766 ──► api
+(the page)                   <name>.<tailnet>.ts.net         (VM, no open ports)                       │
+                                                                                                       ▼
+                                                                                 /srv/s1drops/cache  (areas, photos)
+                                                                                 /srv/s1drops/db     (accounts, verdicts)
+                                                                                 /srv/s1drops/lcz    (optional)
 ```
 
-- **app** ([`compose.yaml`](compose.yaml)): the `s1drops/Dockerfile` image. It
-  restarts on crash or reboot, has a healthcheck, and its port is bound to
-  `127.0.0.1` only.
+- **api** ([`compose.yaml`](compose.yaml)): the `s1drops/Dockerfile` image
+  running `s1drops.api.main`. It restarts on crash or reboot, has a
+  healthcheck, and its port is bound to `127.0.0.1` only. It answers `/api/…`
+  and forwards every other path to the Space4All page (old links included).
 - **Tailscale Funnel** runs on the host and gives a fixed HTTPS hostname with no
   domain, no TLS setup and no inbound ports. It is free on Tailscale's personal
   plan.
 - Have your own domain on Cloudflare? See the
   [Cloudflare tunnel alternative](#alternative-cloudflare-named-tunnel).
+
+Until 25 November 2026 the VM also ran the Solara app, the tool's first
+interface with its own sign-in. It was retired once the Space4All page covered
+all of it; its address now forwards there.
 
 ## 1. Create the VM (Oracle Cloud Always Free)
 
@@ -39,11 +46,10 @@ browser ──HTTPS──► Tailscale Funnel ◄──outbound── tailscaled
    another availability domain in the same region.
 
 **Idle reclamation.** Oracle may stop Always Free instances that stay idle
-(CPU, network and memory all low) for 7 days, and an app that is mostly waiting
-for clicks can look idle. To avoid it, upgrade the account to **Pay As You Go**
-(Billing → Upgrade). Always Free resources stay free and reclamation no longer
-applies, but anything you create *outside* the free allowance would be billed,
-so set a budget alert at $1 (Billing → Budgets).
+(CPU, network and memory all low) for 7 days. To avoid it, upgrade the account
+to **Pay As You Go** (Billing → Upgrade). Always Free resources stay free and
+reclamation no longer applies, but anything you create *outside* the free
+allowance would be billed, so set a budget alert at $1 (Billing → Budgets).
 
 ## 2. Set up the VM
 
@@ -59,11 +65,10 @@ clones the repo to `/opt/s1drops`, and copies `.env.example` to `.env`
 rules already allow only SSH.
 
 ```bash
-nano /opt/s1drops/deploy/.env     # S1DROPS_ADMIN_PASSWORD: openssl rand -base64 24
-                                  # with 24 GB RAM, also set S1DROPS_MEM_LIMIT=20g
+nano /opt/s1drops/deploy/.env     # S1DROPS_ADMIN_EMAILS=you@example.org (the first admin)
 cd /opt/s1drops/deploy
 docker compose up -d --build      # first build takes several minutes
-docker compose ps                 # app should show (healthy)
+docker compose ps                 # api should show (healthy)
 ```
 
 ## 3. Publish it with Tailscale Funnel
@@ -74,53 +79,43 @@ docker compose ps                 # app should show (healthy)
 
    ```bash
    sudo tailscale up --hostname s1drops    # open the printed link to log in
-   sudo tailscale funnel --bg 8765
+   sudo tailscale funnel --bg 8766
+   curl https://<your-funnel-name>.ts.net/api/health      # {"ok":true}
    ```
 
    The first `funnel` run prints a link to enable HTTPS and Funnel for your
    tailnet. Open it, approve, and run the command again. It prints the public
-   URL, `https://s1drops.<tailnet>.ts.net`. `--bg` makes the setting persist
-   across reboots.
+   URL. `--bg` makes the setting persist across reboots.
 3. Optional: in the Tailscale admin console (DNS), swap the tailnet name for a
    random "fun name" so the URL doesn't reveal your account.
+4. The page reads the API's address from the Space4All site's build setting
+   `PUBLIC_DEMOLITIONS_API_URL` (default: this VM's Funnel address).
 
 `tailscale funnel status` shows what's published; `sudo tailscale funnel --https=443 off`
 unpublishes it.
 
-### The Space4All API
-
-The `api` service (compose) is the JSON API behind Space4All's Demolition
-detection page, <https://space4all.web.app/tools/demolitions/>. It listens on
-127.0.0.1:8766 and is published on the same hostname, under `/api`:
-
-```bash
-sudo tailscale funnel --bg --set-path /api http://127.0.0.1:8766/api
-curl https://<your-funnel-name>.ts.net/api/health      # {"ok":true}
-```
-
-It accepts Space4All sign-ins only (`S1DROPS_FIREBASE_PROJECT`), from the
+The API accepts Space4All sign-ins only (`S1DROPS_FIREBASE_PROJECT`), from the
 Space4All site only (`S1DROPS_API_ORIGINS`), and shows the tool to approved
-users only: roles are those of the Admin tab, matched to Space4All accounts by
-verified email.
+users only.
 
 ### Optional: LCZ filtering
 
 ```bash
 # from your laptop (~1.4 GB)
 scp lcz_cog.tif ubuntu@<vm-public-ip>:/srv/s1drops/lcz/
-# on the VM: uncomment S1DROPS_LCZ_PATH in .env, then
+# on the VM: set S1DROPS_LCZ_PATH=/data/lcz/lcz_cog.tif in .env, then
 docker compose up -d
 ```
 
-LCZ is read at bake time, so only cubes baked after this step get the layer.
+LCZ is read at bake time, so only areas baked after this step get the layer.
 
-### Optional: move existing cubes from the laptop
+### Optional: move existing areas from the laptop
 
-Cubes are plain directories, so copy them and rebuild the registry:
+Areas are plain directories, so copy them and rebuild the registry:
 
 ```bash
 rsync -a --progress /path/to/cache/ ubuntu@<vm-public-ip>:/srv/s1drops/cache/
-docker compose exec app python -m s1drops.cli rescan --cache-dir /data/cache
+docker compose exec api python -m s1drops.cli rescan --cache-dir /data/cache
 ```
 
 ## 4. Day-to-day
@@ -128,48 +123,48 @@ docker compose exec app python -m s1drops.cli rescan --cache-dir /data/cache
 | Task | Command (in `/opt/s1drops/deploy`) |
 | --- | --- |
 | Deploy new code | `bash update.sh` (pull, rebuild, restart) |
-| Logs | `docker compose logs -f app` |
-| Restart | `docker compose restart app` |
-| Stop everything | `docker compose down` (cubes on disk are kept) |
-| CLI | `docker compose exec app python -m s1drops.cli list --cache-dir /data/cache` |
-| Reach the app bypassing Funnel | from your laptop: `ssh -L 8765:127.0.0.1:8765 ubuntu@<vm-public-ip>`, then open `http://localhost:8765` |
+| Logs | `docker compose logs -f api` (errors only: there is no request log) |
+| Restart | `docker compose restart api` |
+| Stop everything | `docker compose down` (areas on disk are kept) |
+| CLI | `docker compose exec api python -m s1drops.cli list --cache-dir /data/cache` |
 
-**Before redeploying or restarting, check the Admin tab's bake queue is empty.**
-The queue lives in memory, so a restart drops queued and running jobs. Finished
-cubes are on disk and unaffected.
+**Before redeploying or restarting, check the bake queue is empty** (the
+Space4All page → Admin → Areas). The queue lives in memory, so a restart drops
+queued and running jobs. Finished areas are on disk and unaffected.
 
 ### Monthly updates
 
 Every area gets the newest Sentinel-1 passes once a month: from the 1st, after
-02:00 UTC, the app queues an update job in the bake queue. Admin → **Monthly
-updates → Update now** queues the same job at any time (it then counts as that
-month's). The first automatic run is on the 1st of the month *after* the app
-first starts, never straight away.
+02:00 UTC, the API queues an update job in the bake queue. Admin → Areas →
+**Update now** queues the same job at any time (it then counts as that month's).
+The first automatic run is on the 1st of the month *after* the API first
+starts, never straight away.
 
 Each update writes the extended area as a new store, checks it (same grid, all
 old passes plus the new ones, real values), and only then switches to it. The
 previous version moves to `/srv/s1drops/cache/previous/` (one per area) and stays
 until the next update succeeds. A failed or empty update leaves the area as it
-was. Runs and their results are listed in the Admin tab and in
+was. Runs and their results are listed under Admin → Areas and in
 `/srv/s1drops/cache/updates.json`.
 
-To roll an area back by hand (with the app stopped: `docker compose stop app`):
+To roll an area back by hand (with the API stopped: `docker compose stop api`):
 
 ```bash
 cd /srv/s1drops/cache
 mv Lagos_100m_2017-01-01_2026-11-03_nm.zarr /tmp/            # the update to undo
 mv previous/Lagos_100m_2017-01-01_2026-10-01_nm.zarr .
 rm registry.json                                             # rebuilt on next start
-docker compose start app
+docker compose start api
 ```
 
 Shared links name an area without its dates, so they keep working after updates.
 
 ## 5. Backups
 
-**The accounts and verdicts database (`/srv/s1drops/db/app.db`) cannot be
-rebuilt: back it up.** `backup-db.sh` copies it safely while the app runs and
-keeps the last 30 days in `/srv/s1drops/db-backups`. Install it once:
+**The database (`/srv/s1drops/db/app.db`: accounts, roles, verdicts, reference
+data, feedback) cannot be rebuilt: back it up.** `backup-db.sh` copies it safely
+while the API runs and keeps the last 30 days in `/srv/s1drops/db-backups`.
+Install it once:
 
 ```bash
 (crontab -l 2>/dev/null; echo "15 3 * * * bash /opt/s1drops/deploy/backup-db.sh") | crontab -
@@ -180,7 +175,7 @@ Keep a copy off the VM too, e.g. from your laptop:
 `scp ubuntu@<vm-public-ip>:/srv/s1drops/db-backups/app-$(date +%F).db .`
 The file holds names, emails and verdicts: store it somewhere private.
 
-The cube cache (`/srv/s1drops/cache`) can all be rebuilt from Planetary
+The area cache (`/srv/s1drops/cache`) can all be rebuilt from Planetary
 Computer, but a long bake is slow. Oracle's Always Free tier includes 5 volume
 backups (Block Storage → Boot Volumes → Create backup), or archive the cache:
 
@@ -190,100 +185,50 @@ tar -C /srv/s1drops -czf s1drops-cache-$(date +%F).tgz cache
 
 If you lose `registry.json`, run `rescan` to rebuild it from the zarr stores.
 
-## 6. Accounts and Google sign-in
+## 6. Accounts
 
-Browsing needs no account. Accounts are for validating detected changes:
+People sign in with their Space4All account (verified email) on the page and
+ask for access; the tool's admins approve them under Admin → Users.
 
 | Role | Can |
 | --- | --- |
 | Waiting for approval | Sign in; nothing else until an admin sets a role |
-| Validator | Record verdicts and see everyone's |
+| Validator | Use the tool, record verdicts and see everyone's |
 | Reviewer | Validator, plus veto any verdict and download all verdicts |
-| Admin | Reviewer, plus manage accounts, bake cubes and import reference data |
+| Admin | Reviewer, plus manage users, prepare and delete areas, import reference data, read feedback |
 
-People get an account in one of three ways:
-
-- **Invite link** (Admin tab → Accounts → Invite someone): you choose the email
-  and role and get a one-time link, valid 7 days. Send it yourself (there is no
-  email server); they set a password or use Google with that same email.
-- **Request** (`/auth/signup`, linked from Sign in): anyone can ask. The account
-  waits for approval until you set its role in Admin → Accounts.
-- **Google sign-in**: same as a request (waits for approval) unless the email
-  has an invite or is in `S1DROPS_ADMIN_EMAILS`.
-
-Forgotten passwords: Admin → Accounts → **Reset link** next to the person, and
-send them the link (valid 2 days). Switching someone to **Disabled** signs them
-out at once. Their verdicts stay on record.
-
-### First admin
-
-In `deploy/.env` set your own email and the public address, then redeploy:
-
-```bash
-S1DROPS_ADMIN_EMAILS=you@example.org
-S1DROPS_PUBLIC_URL=https://<your-funnel-name>.ts.net
-```
-
-```bash
-cd /opt/s1drops/deploy && docker compose up -d
-```
-
-Open the site, click **Sign in** (top right) → **Request one**, and sign up with
-that email (or use Google once it is set up). You land back on the map with
-"<your name> · Admin" in the top bar, and the Admin tab opens without the
-shared password. The shared `S1DROPS_ADMIN_PASSWORD` keeps working as a fallback.
-
-### Turning on Google sign-in
-
-1. Go to <https://console.cloud.google.com/>, sign in, and create a project
-   (top bar → project picker → **New project**, any name, e.g. `s1drops`).
-2. **APIs & Services → OAuth consent screen** (Google may call it **Google Auth
-   Platform → Branding**). Choose **External**, app name "Rapid change detection
-   tool", your email as support and developer contact. Scopes: none to add (the
-   app only asks for name and email). Save.
-3. Under **Audience**, press **Publish app** so anyone with a Google account can
-   sign in. (In "Testing" mode only the test users you list can.)
-4. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
-   Type **Web application**. Under **Authorized redirect URIs** add exactly:
-   `https://<your-funnel-name>.ts.net/auth/google/callback`
-   (and `http://localhost:8765/auth/google/callback` if you test locally).
-   Create. Google shows a **Client ID** and **Client secret**.
-5. Put them in `deploy/.env` on the VM:
-   ```bash
-   GOOGLE_CLIENT_ID=1234...apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=GOCSPX-...
-   ```
-6. `cd /opt/s1drops/deploy && docker compose up -d`.
-7. Check: the Sign in page now shows **Sign in with Google**. If Google says
-   `redirect_uri_mismatch`, the URI in step 4 and `S1DROPS_PUBLIC_URL` must match
-   exactly (https, no trailing slash, same host).
+- **Approve someone in advance** (Admin → Users): their email and role; they
+  get it the first time they sign in with that email, once verified.
+- Emails in `S1DROPS_ADMIN_EMAILS` are admins from their first sign-in.
+- Switching someone to **Disabled** shuts them out at once. Their verdicts stay
+  on record.
+- Roles are matched to Space4All accounts by verified email, then by the
+  account itself.
 
 ### Reference demolitions
 
-Admin → Reference demolitions: drop a GeoJSON of known demolition polygons
-(lon/lat) with a year field (`demo_year` by default). Only admins ever see
-them: a "ref" badge in Strongest changes and a reference check under the list.
-They are never drawn on the map, shown to other roles or exported.
+Admin → Reference data: a GeoJSON of known demolition polygons (lon/lat) with a
+year field (`demo_year` by default). Only admins ever see them: a "ref" mark in
+Strongest changes and a reference check under the list. They are never drawn on
+the map, shown to other roles or exported.
 
 ## Security notes
 
-- Funnel makes the app **public**. Sign-in and verdicts are protected by
-  accounts (passwords are scrypt-hashed; sessions are HttpOnly cookies; 5 wrong
-  passwords lock an email for 15 minutes). The shared `S1DROPS_ADMIN_PASSWORD`
-  still opens the cube tools in the Admin tab, so keep it long and random.
-- For a known team only, use `sudo tailscale serve --bg 8765` instead of
-  `funnel`. The app is then reachable only by people you invite to your tailnet
-  (free for up to 3 users; each installs Tailscale on their device).
-- Docker bypasses host firewalls for published ports. The app's port is
+- Funnel makes the API **public**, but every route except `/api/health` needs a
+  Space4All sign-in, and everything but asking for access needs an approved
+  role. Calls are accepted from the Space4All site only (CORS).
+- There is no request log, so visitors' IP addresses are not kept (Space4All's
+  privacy notice says so). Errors are still logged.
+- Docker bypasses host firewalls for published ports. The API's port is
   published on `127.0.0.1` only, so it is not exposed; keep it that way.
 - `deploy/.env` is excluded from git and from the Docker build context.
 
 ## Troubleshooting
 
-- **App killed mid-bake (`docker compose ps` shows a restart, `dmesg` shows OOM)**:
-  lower `S1DROPS_MAX_CUBE_BYTES`, or raise `S1DROPS_MEM_LIMIT` if the VM has room.
-- **Funnel URL doesn't load**: `tailscale funnel status` should list port 8765.
-  Check the app answers locally with `curl -I http://127.0.0.1:8765`.
+- **API killed mid-bake (`docker compose ps` shows a restart, `dmesg` shows OOM)**:
+  lower `S1DROPS_MAX_CUBE_BYTES`, or raise `S1DROPS_API_MEM_LIMIT` if the VM has room.
+- **Funnel URL doesn't load**: `tailscale funnel status` should list port 8766.
+  Check the API answers locally with `curl http://127.0.0.1:8766/api/health`.
 - **Instance stopped by itself**: likely idle reclamation, see step 1. Start it
   from the console; containers and Funnel come back on their own.
 
@@ -291,19 +236,18 @@ They are never drawn on the map, shown to other roles or exported.
 
 ## Alternative: Cloudflare named tunnel
 
-Use this instead of Funnel if you have a domain whose DNS is on Cloudflare, or if
-you want Cloudflare Access (email one-time-PIN login in front of the whole app,
-free up to 50 users).
+Use this instead of Funnel if you have a domain whose DNS is on Cloudflare.
 
 1. Zero Trust dashboard → **Networks → Tunnels → Create a tunnel** →
    *Cloudflared*, named `s1drops`. Copy the token (the string after `--token`)
    and skip the install commands.
-2. **Public hostname**: `s1drops.<your-domain>` → `HTTP` → `app:8765`. Use
-   `app`, the compose service name, not `localhost`: inside the tunnel
+2. **Public hostname**: `s1drops.<your-domain>` → `HTTP` → `api:8766`. Use
+   `api`, the compose service name, not `localhost`: inside the tunnel
    container, `localhost` is the tunnel itself.
 3. In `deploy/.env`, uncomment `COMPOSE_PROFILES=cloudflare` and set
    `CLOUDFLARE_TUNNEL_TOKEN`, then `docker compose up -d`. This starts the
-   `tunnel` container next to the app.
+   `tunnel` container next to the API.
+4. Set the Space4All site's `PUBLIC_DEMOLITIONS_API_URL` to that hostname.
 
 If the `tunnel` container keeps restarting, the token is wrong or the tunnel was
 deleted in the dashboard (`docker compose logs tunnel`).
