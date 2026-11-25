@@ -190,3 +190,17 @@ def test_photo_jobs_belong_to_who_started_them(client, monkeypatch):
     assert client.get(f"/api/photos/{job['id']}", headers=client.h("tok-rev")).status_code == 404
     body["source"] = "drone"
     assert client.post("/api/areas/testtown_100m/photos", json=body, headers=client.h("tok-val")).status_code == 400
+
+
+def test_warm_up_fills_what_the_api_reads(cache):
+    """The start-up warm-up (Explore's own) computes the default view under the
+    same keys the API asks for: the first visitor's map and list are ready."""
+    from s1drops.app import explore as ex
+
+    ex._SHARED.items.clear()
+    ex.warm_up(str(cache))
+    warmed = set(ex._SHARED.items)
+    a = view.open_area(cache, "testtown_100m")
+    view.overlay(a, view.View("testtown_100m"), "hotspot")
+    view.ranked(a, view.View("testtown_100m"))
+    assert set(ex._SHARED.items) == warmed

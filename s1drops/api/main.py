@@ -44,6 +44,17 @@ def cache_dir() -> Path:
     return Path(os.environ.get("S1DROPS_CACHE_DIR", "./cache"))
 
 
+@app.on_event("startup")
+def _warm_up() -> None:
+    """Every area's default view (map layer and list), worked out in the background
+    at start, as the Solara app does, so the first visitor doesn't wait ~10 s.
+    S1DROPS_API_WARM_UP=0 turns it off (tests)."""
+    if os.environ.get("S1DROPS_API_WARM_UP", "1") != "0":
+        import threading
+
+        threading.Thread(target=view.ex.warm_up, args=(str(cache_dir()),), daemon=True).start()
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}
