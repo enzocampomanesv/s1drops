@@ -87,6 +87,22 @@ docker compose ps                 # app should show (healthy)
 `tailscale funnel status` shows what's published; `sudo tailscale funnel --https=443 off`
 unpublishes it.
 
+### The Space4All API
+
+The `api` service (compose) is the JSON API behind Space4All's Demolition
+detection page, <https://space4all.web.app/tools/demolitions/>. It listens on
+127.0.0.1:8766 and is published on the same hostname, under `/api`:
+
+```bash
+sudo tailscale funnel --bg --set-path /api http://127.0.0.1:8766/api
+curl https://<your-funnel-name>.ts.net/api/health      # {"ok":true}
+```
+
+It accepts Space4All sign-ins only (`S1DROPS_FIREBASE_PROJECT`), from the
+Space4All site only (`S1DROPS_API_ORIGINS`), and shows the tool to approved
+users only: roles are those of the Admin tab, matched to Space4All accounts by
+verified email.
+
 ### Optional: LCZ filtering
 
 ```bash

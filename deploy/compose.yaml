@@ -56,6 +56,40 @@ services:
       start_period: 60s
       retries: 3
 
+  # The JSON API for Space4All's Demolition detection page
+  # (space4all.web.app/tools/demolitions/), from the same image, on the same
+  # cubes and database. Funnel publishes it under /api on the same hostname
+  # (README, "The Space4All API").
+  api:
+    image: s1drops:latest
+    pull_policy: never        # built by the app service above
+    restart: unless-stopped
+    command: ["uvicorn", "s1drops.api.main:app", "--host", "0.0.0.0", "--port", "8766", "--proxy-headers"]
+    environment:
+      S1DROPS_CACHE_DIR: /data/cache
+      S1DROPS_DB_PATH: /data/db/app.db
+      S1DROPS_ADMIN_EMAILS: ${S1DROPS_ADMIN_EMAILS:-}
+      S1DROPS_LCZ_PATH: ${S1DROPS_LCZ_PATH:-}
+      # Space4All's Firebase project: whose sign-ins the API accepts.
+      S1DROPS_FIREBASE_PROJECT: ${S1DROPS_FIREBASE_PROJECT:-livability-mapping-prod}
+      # Pages allowed to call it (CORS), comma-separated.
+      S1DROPS_API_ORIGINS: ${S1DROPS_API_ORIGINS:-https://space4all.web.app}
+      FORWARDED_ALLOW_IPS: "*"
+    volumes:
+      - ${S1DROPS_DATA_DIR:-/srv/s1drops}/cache:/data/cache
+      - ${S1DROPS_DATA_DIR:-/srv/s1drops}/db:/data/db
+      - ${S1DROPS_DATA_DIR:-/srv/s1drops}/lcz:/data/lcz:ro
+    ports:
+      - "127.0.0.1:8766:8766"
+    # Its own limit, so page requests can't starve a bake in the app (or the reverse).
+    mem_limit: ${S1DROPS_API_MEM_LIMIT:-3g}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
   # Opt-in: only for the Cloudflare named-tunnel route (needs a domain on
   # Cloudflare). Enable with COMPOSE_PROFILES=cloudflare in deploy/.env.
   # The free route uses Tailscale Funnel on the host instead - see README.

@@ -103,11 +103,23 @@ def connect() -> Iterator[sqlite3.Connection]:
                 from . import feedback, validation    # their tables share the database
                 con.executescript(validation.SCHEMA)
                 con.executescript(feedback.SCHEMA)
+                _migrate(con)
                 _initialised.add(path)
         yield con
         con.commit()
     finally:
         con.close()
+
+
+def _migrate(con) -> None:
+    """Columns added after the first release, on databases made before them."""
+    cols = {r["name"] for r in con.execute("PRAGMA table_info(users)")}
+    if "firebase_uid" not in cols:
+        # The Space4All (Firebase) account behind this user, once they have used
+        # the tool through Space4All (s1drops/api). SQLite can't add a UNIQUE
+        # column, so the uniqueness is an index.
+        con.execute("ALTER TABLE users ADD COLUMN firebase_uid TEXT")
+    con.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_firebase_uid ON users(firebase_uid)")
 
 
 @dataclass(frozen=True)
@@ -338,6 +350,55 @@ def google_sign_in(sub: str, email: str, name: str) -> User:
     if row["role"] == "disabled":
         raise ValueError("This account has been disabled.")
     return _user(row)
+
+
+# ---- Space4All accounts (s1drops/api) ------------------------------------------
+
+def space4all_user(uid: str, email: str, email_verified: bool) -> Optional[User]:
+    """The tool's account for a Space4All (Firebase) sign-in, or None if there is
+    none yet. Matched by Firebase uid; failing that, by email, and only a
+    verified email links an existing account (roles go by email, so an
+    unverified address must not inherit someone else's)."""
+    email = normalise_email(email)
+    with connect() as con:
+        row = con.execute("SELECT * FROM users WHERE firebase_uid = ?", (uid,)).fetchone()
+        if row is None and email_verified and email:
+            row = con.execute("SELECT * FROM users WHERE email = ? AND firebase_uid IS NULL",
+                              (email,)).fetchone()
+            if row is not None:
+                con.execute("UPDATE users SET firebase_uid = ? WHERE id = ?", (uid, row["id"]))
+        if row is not None:
+            con.execute("UPDATE users SET last_login = ? WHERE id = ?", (time.time(), row["id"]))
+        return _user(row)
+
+
+def request_access(uid: str, email: str, name: str, affiliation: str, reason: str) -> User:
+    """A Space4All user asks for access: a pending account (an admin approves
+    it), or the details updated if they asked before. Listed bootstrap admins
+    (S1DROPS_ADMIN_EMAILS) start as admin, as with the other sign-ins."""
+    email = normalise_email(email)
+    name, affiliation, reason = name.strip(), affiliation.strip(), reason.strip()
+    if not name or not reason:
+        raise ValueError("Give your name and why you need access.")
+    with connect() as con:
+        row = con.execute("SELECT * FROM users WHERE firebase_uid = ?", (uid,)).fetchone()
+        if row is not None:
+            if row["role"] != "pending":
+                raise ValueError("You already have access." if row["role"] != "disabled"
+                                 else "This account has been disabled.")
+            con.execute("UPDATE users SET name = ?, affiliation = ?, reason = ? WHERE id = ?",
+                        (name, affiliation, reason, row["id"]))
+            user_id = row["id"]
+        else:
+            if con.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
+                raise ValueError("This email already has an account here; verify your email to use it.")
+            role = _initial_role(email)
+            user_id = con.execute(
+                "INSERT INTO users (email, name, affiliation, reason, role, firebase_uid, created_at, "
+                "approved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (email, name, affiliation, reason, role, uid, time.time(),
+                 time.time() if role != "pending" else None)).lastrowid
+        return _user(con.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
 
 
 def create_invite(admin: User, email: str, role: str) -> str:
