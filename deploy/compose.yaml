@@ -82,7 +82,8 @@ services:
     ports:
       - "127.0.0.1:8766:8766"
     # Its own limit, so page requests can't starve a bake in the app (or the reverse).
-    mem_limit: ${S1DROPS_API_MEM_LIMIT:-3g}
+    # A few areas open at once (each ~1 GB in memory at 100 m) plus their shared results.
+    mem_limit: ${S1DROPS_API_MEM_LIMIT:-4g}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/api/health', timeout=5)"]
       interval: 30s
