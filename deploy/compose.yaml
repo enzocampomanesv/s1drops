@@ -64,7 +64,9 @@ services:
     image: s1drops:latest
     pull_policy: never        # built by the app service above
     restart: unless-stopped
-    command: ["uvicorn", "s1drops.api.main:app", "--host", "0.0.0.0", "--port", "8766", "--proxy-headers"]
+    # No request log: it would hold visitors' IP addresses, which Space4All's
+    # privacy notice says the tool doesn't keep. Errors are still logged.
+    command: ["uvicorn", "s1drops.api.main:app", "--host", "0.0.0.0", "--port", "8766", "--proxy-headers", "--no-access-log"]
     environment:
       S1DROPS_CACHE_DIR: /data/cache
       S1DROPS_DB_PATH: /data/db/app.db
