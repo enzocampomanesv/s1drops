@@ -82,8 +82,10 @@ services:
     ports:
       - "127.0.0.1:8766:8766"
     # Its own limit, so page requests can't starve a bake in the app (or the reverse).
-    # A few areas open at once (each ~1 GB in memory at 100 m) plus their shared results.
-    mem_limit: ${S1DROPS_API_MEM_LIMIT:-4g}
+    # Working out an area's drop map peaks at about 4 GB for the largest (Nairobi,
+    # 728 passes at 100 m); 8 GB leaves room for a second at the same time. The VM
+    # has 24 GB: the app (6 GB) and this can both peak together.
+    mem_limit: ${S1DROPS_API_MEM_LIMIT:-8g}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/api/health', timeout=5)"]
       interval: 30s
