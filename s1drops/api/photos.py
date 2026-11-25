@@ -38,6 +38,16 @@ def get(job_id: str, uid: str) -> Optional[Dict]:
         return {k: j[k] for k in ("id", "kind", "status", "messages", "result", "error")}
 
 
+def for_report(job_id: str, uid: str, cell, before_idx: int, after_idx: int) -> Optional[Dict]:
+    """A finished Sentinel-2 job's photos as the report draws them, if it is the
+    caller's and was fetched for this cell; else None (the report says so)."""
+    with _lock:
+        j = _jobs.get(job_id)
+        if j is None or j["uid"] != uid or j["kind"] != "s2" or j["status"] != "done" or j.get("cell") != tuple(cell):
+            return None
+        return dict(j["raw"], before_idx=before_idx, after_idx=after_idx)
+
+
 def _run(job: Dict, work) -> None:
     def say(m):
         with _lock:
@@ -58,6 +68,7 @@ def _run(job: Dict, work) -> None:
 def start_s2(uid: str, area, cell, date_before: str, date_after: str, cache_dir,
              cloud_pct: Optional[float] = None, window_days: Optional[int] = None) -> Dict:
     job = _new(uid, "s2")
+    job["cell"] = tuple(int(i) for i in cell)
     cloud = (cloud_pct / 100.0) if cloud_pct is not None else s2_cloud_thresh()
     win = window_days if window_days is not None else int(s2_window_days())
 
@@ -66,6 +77,8 @@ def start_s2(uid: str, area, cell, date_before: str, date_after: str, cache_dir,
             area.cube, cube_key=area.entry.key, cell=cell, before_anchor=date_before, after_anchor=date_after,
             radius_m=optical_radius_m(), window_days=win, cloud_thresh=cloud, cloud_bucket=s2_cloud_bucket(),
             max_probes=int(s2_max_probes()), n_candidates=int(s2_candidates()), cache_dir=cache_dir, progress=say)
+        with _lock:
+            job["raw"] = r          # the pictures themselves, for a report (never sent as JSON)
         out, bounds = {}, None
         for side in ("before", "after"):
             cands = []

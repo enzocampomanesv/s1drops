@@ -229,16 +229,19 @@ def record_json(r: validation.Record, viewer_id: int) -> Dict:
     }
 
 
-def at(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir) -> Dict:
-    """A place on the map, clicked or picked from the list: its change area (if
-    any), the radar signal and detected changes there, how sure we are, the
-    changes photos can be fetched for, and the verdicts on it."""
+class Outside(ValueError):
+    pass
+
+
+def place_at(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir) -> Dict:
+    """The analysis of a place (the page's selection and the report share it):
+    raises Outside for a point that isn't analysed."""
     cube = a.cube
     idx = cell_index(cube, lon, lat)
     if idx is None:
-        return {"note": "That point is outside this area."}
+        raise Outside("That point is outside this area.")
     if not logic.cell_allowed(cube, idx[0], idx[1], list(v.lcz)):
-        return {"note": "That point is outside the selected land-use classes, so it isn't analysed."}
+        raise Outside("That point is outside the selected land-use classes, so it isn't analysed.")
     found, labels = ranked(a, v)
     _, track_drops, start, end = hotspot(a, v)
     area = found[labels[idx]] if labels is not None and labels[idx] >= 0 else None
@@ -292,11 +295,29 @@ def at(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir) -> 
     if target is None and photo:
         target = {"row": idx[0], "col": idx[1], "date_before": photo[0]["date_before"][:10],
                   "date_after": photo[0]["date_after"][:10]}
+    return {
+        "idx": idx, "lat": float(lat_c), "lon": float(lon_c), "area": area, "picked": picked, "start": start,
+        "end": end, "results": results, "events": events, "signal": sig, "rating": rating, "summary": summary,
+        "records": recs, "place": place, "photo": photo, "target": target, "track_drops": track_drops,
+        "land": (logic.lcz_label(logic.lcz_at(cube, idx[0], idx[1])).split(" ", 1)[-1]
+                 if logic.has_lcz(cube) else ""),
+    }
+
+
+def at(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir) -> Dict:
+    """A place on the map, clicked or picked from the list: its change area (if
+    any), the radar signal and detected changes there, how sure we are, the
+    changes photos can be fetched for, and the verdicts on it."""
+    try:
+        p = place_at(a, v, d, lat, lon, user, cache_dir)
+    except Outside as e:
+        return {"note": str(e)}
+    cube, idx, area, picked, events, sig = a.cube, p["idx"], p["area"], p["picked"], p["events"], p["signal"]
+    rating, summary, recs, target, photo = p["rating"], p["summary"], p["records"], p["target"], p["photo"]
     mine_id = user.id if user else -1
     return {
-        "cell": [int(idx[0]), int(idx[1])], "lat": float(lat_c), "lon": float(lon_c),
-        "land": logic.lcz_label(logic.lcz_at(cube, idx[0], idx[1])).split(" ", 1)[-1] if logic.has_lcz(cube) else "",
-        "place": place, "start": start, "end": end,
+        "cell": [int(idx[0]), int(idx[1])], "lat": p["lat"], "lon": p["lon"],
+        "land": p["land"], "place": p["place"], "start": p["start"], "end": p["end"],
         "area": (dict(change_json(area, min_change=v.min_change, cache_dir=cache_dir),
                       outline=logic.area_outline(cube, area["cells"])) if area is not None else None),
         "listed": (change_json(picked, min_change=v.min_change, cache_dir=cache_dir, rating=rating, summary=summary)
@@ -311,13 +332,45 @@ def at(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir) -> 
             "dates": [str(x) for x in sig.dates], "pct": [round(float(x), 1) for x in sig.pct],
             "trend": [round(float(x), 1) for x in sig.trend], "band": sig.band, "hover": sig.hover,
         },
-        "rows": [{k: (v_.item() if hasattr(v_, "item") else v_) for k, v_ in r.items()} for r in logic.drop_rows(results)],
+        "rows": [{k: (v_.item() if hasattr(v_, "item") else v_) for k, v_ in r.items()}
+                 for r in logic.drop_rows(p["results"])],
         "photoOptions": [{"label": o["label"], "dateBefore": o["date_before"][:10], "dateAfter": o["date_after"][:10]}
                          for o in photo],
         "target": target_json(target) if target is not None else None,
         "verdicts": [record_json(r, mine_id) for r in (validation.matching(recs, target) if target else [])],
         "summary": _summary(summary),
     }
+
+
+PAGE_URL = "https://space4all.web.app/tools/demolitions/"
+
+
+def share_link(a: Area, lat: float, lon: float, start, end) -> str:
+    """The page's link to this place (its hash: area/lat,lon/start,end)."""
+    return f"{PAGE_URL}#{a.entry.key}/{lat:.5f},{lon:.5f}/{start},{end}"
+
+
+def report_pdf(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_dir,
+               photos: Optional[Dict] = None) -> Tuple[bytes, str]:
+    """The one-page case sheet for the listed change at this place (the old
+    app's report), with its Sentinel-2 photos when the caller fetched them, and
+    a file name. ValueError if there is no listed change here."""
+    from ..app import report
+
+    p = place_at(a, v, d, lat, lon, user, cache_dir)
+    c = p["picked"]
+    if c is None or p["rating"] is None:
+        raise ValueError("Reports are for changes in Strongest changes: pick one from the list, or click inside one.")
+    hot, _, start, end = hotspot(a, v)
+    res = float(a.cube.attrs.get("resolution", 100.0))
+    pdf = report.build(
+        place=p["place"] or "", area_name=a.entry.name.replace("_", " ").title(), c=c, rating=p["rating"],
+        events=p["events"], signal=p["signal"], min_change=v.min_change, cube=a.cube, mag=hot[0], resolution=res,
+        land_use=p["land"], link=share_link(a, c["lat"], c["lon"], start, end), photos=photos,
+        verdicts=validation.matching(p["records"], c))
+    name = ((p["place"] or "site").split(",")[0]).strip()
+    slug = ex._slug(f"{a.entry.name}_{name}_{(c.get('date_after') or '')[:7]}")
+    return pdf, f"{slug}_report.pdf"
 
 
 def verdict_layer(a: Area, user) -> Dict:

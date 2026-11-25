@@ -204,3 +204,29 @@ def test_warm_up_fills_what_the_api_reads(cache):
     view.overlay(a, view.View("testtown_100m"), "hotspot")
     view.ranked(a, view.View("testtown_100m"))
     assert set(ex._SHARED.items) == warmed
+
+
+def test_report_for_a_listed_change(client):
+    cube = _cube()
+    lat, lon = centre(cube, 5, 6)
+    r = client.get(f"/api/areas/testtown_100m/report?lat={lat}&lon={lon}", headers=client.h("tok-val"))
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF") and "_report.pdf" in r.headers["content-disposition"]
+    # someone else's (or unknown) photo job is ignored, not an error
+    assert client.get(f"/api/areas/testtown_100m/report?lat={lat}&lon={lon}&photos=nope",
+                      headers=client.h("tok-val")).status_code == 200
+    lat0, lon0 = centre(cube, 0, 0)
+    q = client.get(f"/api/areas/testtown_100m/report?lat={lat0}&lon={lon0}", headers=client.h("tok-val"))
+    assert q.status_code == 400 and "Strongest changes" in q.json()["detail"]
+    assert client.get(f"/api/areas/testtown_100m/report?lat={lat}&lon={lon}", headers=client.h("tok-new")).status_code == 403
+
+
+def test_report_photos_only_from_your_own_job(monkeypatch):
+    rgb = np.zeros((4, 4, 3), "uint8")
+    raw = {"before": {"candidates": [{"date": "2023-05-01", "cloud": 0.0, "rgb": rgb}]},
+           "after": {"candidates": [{"date": "2023-08-01", "cloud": 0.1, "rgb": rgb}]}, "transform": None, "crs": None}
+    photos._jobs["j1"] = {"id": "j1", "uid": "me", "kind": "s2", "status": "done", "cell": (5, 6), "raw": raw,
+                          "created": time.time(), "messages": [], "result": {}, "error": ""}
+    assert photos.for_report("j1", "me", (5, 6), 0, 0)["after"]["candidates"][0]["date"] == "2023-08-01"
+    assert photos.for_report("j1", "someone", (5, 6), 0, 0) is None
+    assert photos.for_report("j1", "me", (1, 1), 0, 0) is None      # fetched for another place

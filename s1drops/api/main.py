@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -36,6 +36,7 @@ app.add_middleware(
     allow_origins=_origins(),
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Content-Disposition"],     # the report's file name
     max_age=3600,
 )
 
@@ -223,6 +224,25 @@ def photos_start(key: str, body: PhotosIn, c: Caller = Depends(approved)):
     if cell is None:
         raise HTTPException(status_code=400, detail="That point is outside this area.")
     return photo_jobs.start_s2(c.uid, a, cell, before, after, cache_dir(), body.cloudPct, body.windowDays)
+
+
+@app.get("/api/areas/{key}/report")
+def report(key: str, lat: float = Query(..., ge=-90, le=90), lon: float = Query(..., ge=-180, le=180),
+           photos: Optional[str] = Query(None, description="a Sentinel-2 photo job of yours to include"),
+           beforeIdx: int = Query(0, ge=0, le=20), afterIdx: int = Query(0, ge=0, le=20),
+           v: view.View = Depends(view_of), d: view.Detect = Depends(detect_of), c: Caller = Depends(approved)):
+    """The listed change at this place as a one-page PDF (the old app's report)."""
+    a = _area(key)
+    pics = None
+    if photos:
+        cell = view.cell_index(a.cube, lon, lat)
+        pics = photo_jobs.for_report(photos, c.uid, cell, beforeIdx, afterIdx) if cell else None
+    try:
+        pdf, name = view.report_pdf(a, v, d, lat, lon, c.user, cache_dir(), pics)
+    except ValueError as e:     # Outside, or nothing listed here
+        raise HTTPException(status_code=400, detail=str(e))
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
 @app.get("/api/photos/{job_id}")
