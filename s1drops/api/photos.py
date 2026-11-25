@@ -48,6 +48,19 @@ def for_report(job_id: str, uid: str, cell, before_idx: int, after_idx: int) -> 
         return dict(j["raw"], before_idx=before_idx, after_idx=after_idx)
 
 
+def tif_for(job_id: str, uid: str, side: str, idx: int) -> Optional[tuple]:
+    """(path, file name) of a Sentinel-2 photo the caller fetched, as a GeoTIFF."""
+    with _lock:
+        j = _jobs.get(job_id)
+        if j is None or j["uid"] != uid or j["kind"] != "s2" or j["status"] != "done" or side not in ("before", "after"):
+            return None
+        cands = j["raw"][side].get("candidates", [])
+        if not cands:
+            return None
+        c = cands[min(max(idx, 0), len(cands) - 1)]
+        return c["tif_path"], f"sentinel2_{side}_{c['date']}.tif"
+
+
 def _run(job: Dict, work) -> None:
     def say(m):
         with _lock:

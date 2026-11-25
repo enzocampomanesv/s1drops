@@ -6,6 +6,7 @@ not by hiding the UI. Bakes run on a background thread with a live progress log.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import json
@@ -373,11 +374,16 @@ def Admin(cache_dir: str = "./cache"):
             if not account_admin:
                 solara.Button("Sign out", on_click=lambda: state.is_admin.set(False),
                               text=True)
-        BuildForm(cache_dir)
-        solara.Markdown("---")
-        ManageCubes(cache_dir)
-        solara.Markdown("---")
-        AreaUpdates(cache_dir)
+        if os.environ.get("S1DROPS_BAKES", "1") == "0":
+            # Only one process may bake: the Space4All API does it now.
+            solara.Info("Areas are now prepared, updated and deleted in Space4All: "
+                        "https://space4all.web.app/tools/demolitions/ (Admin).")
+        else:
+            BuildForm(cache_dir)
+            solara.Markdown("---")
+            ManageCubes(cache_dir)
+            solara.Markdown("---")
+            AreaUpdates(cache_dir)
         solara.Markdown("---")
         if account_admin:
             admin_users.FeedbackInbox()

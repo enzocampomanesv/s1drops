@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from ..app import accounts, validation
 from ..cube import list_cubes
 from . import photos as photo_jobs
+from . import admin as admin_work
 from . import view
 from .auth import Caller, admin, approved, caller
 
@@ -54,6 +55,7 @@ def _warm_up() -> None:
         import threading
 
         threading.Thread(target=view.ex.warm_up, args=(str(cache_dir()),), daemon=True).start()
+        admin_work.started_updater(cache_dir())    # monthly updates, if this process bakes
 
 
 @app.get("/api/health")
@@ -309,6 +311,172 @@ def verdict_options(_: Caller = Depends(approved)):
     return {"verdicts": [{"key": k, "label": v, "colour": validation.COLOURS[k]} for k, v in validation.VERDICTS.items()],
             "evidence": [{"key": k, "label": v} for k, v in validation.EVIDENCE.items()],
             "confidence": list(validation.CONFIDENCE)}
+
+
+# ---- downloads ----
+
+def _file(content, name: str, media: str) -> Response:
+    return Response(content, media_type=media, headers={"Content-Disposition": f'attachment; filename="{name}"',
+                                                        "Cache-Control": "no-store"})
+
+
+@app.get("/api/areas/{key}/download/{item}")
+def download(key: str, item: str, lat: Optional[float] = Query(None, ge=-90, le=90),
+             lon: Optional[float] = Query(None, ge=-180, le=180),
+             v: view.View = Depends(view_of), d: view.Detect = Depends(detect_of), c: Caller = Depends(approved)):
+    """This area's changes (CSV, GeoJSON) or drop map (GeoJSON); with lat/lon, a
+    place's radar signal or detected changes (CSV)."""
+    a = _area(key)
+    try:
+        if item in view.AREA_DOWNLOADS:
+            return _file(*view.area_download(a, v, item, c.user, cache_dir()))
+        if item in view.PLACE_DOWNLOADS and lat is not None and lon is not None:
+            return _file(*view.place_download(a, v, d, lat, lon, item, c.user, cache_dir()))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    raise HTTPException(status_code=404, detail="No such download.")
+
+
+@app.get("/api/photos/{job_id}/{side}.tif")
+def photo_tif(job_id: str, side: str, idx: int = Query(0, ge=0, le=20), c: Caller = Depends(approved)):
+    """A Sentinel-2 photo you fetched, as a GeoTIFF."""
+    found = photo_jobs.tif_for(job_id, c.uid, side, idx)
+    if found is None or not os.path.exists(found[0]):
+        raise HTTPException(status_code=404, detail="Fetch the photos again (they are kept 30 minutes).")
+    with open(found[0], "rb") as f:
+        return _file(f.read(), found[1], "image/tiff")
+
+
+@app.get("/api/verdicts/export")
+def verdicts_export(fmt: str = Query("csv"), c: Caller = Depends(approved)):
+    """Every verdict, with its status (reviewers and admins)."""
+    if fmt not in ("csv", "geojson"):
+        raise HTTPException(status_code=400, detail="csv or geojson")
+    try:
+        text = validation.export(c.user, fmt)
+    except accounts.NotAllowed as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    return _file(text, f"s1drops_verdicts.{fmt}", "text/csv" if fmt == "csv" else "application/geo+json")
+
+
+# ---- admin: areas, bakes, monthly updates ----
+
+@app.get("/api/admin/status")
+def admin_status(_: Caller = Depends(admin)):
+    return admin_work.status(cache_dir())
+
+
+@app.post("/api/admin/estimate")
+def admin_estimate(body: dict, _: Caller = Depends(admin)):
+    try:
+        return admin_work.estimate(cache_dir(), body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/admin/bakes")
+def admin_bake(body: dict, _: Caller = Depends(admin)):
+    try:
+        return admin_work.queue(cache_dir(), body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/admin/bakes/{job_id}")
+def admin_bake_remove(job_id: int, _: Caller = Depends(admin)):
+    admin_work.bakequeue.remove(job_id)
+    return {"removed": job_id}
+
+
+@app.post("/api/admin/bakes/clear")
+def admin_bakes_clear(_: Caller = Depends(admin)):
+    admin_work.bakequeue.clear_finished()
+    return {"ok": True}
+
+
+@app.post("/api/admin/update-now")
+def admin_update_now(_: Caller = Depends(admin)):
+    try:
+        return {"id": admin_work.update_now(cache_dir())}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/areas/{key}")
+def admin_delete_area(key: str, confirm: str = Query(""), _: Caller = Depends(admin)):
+    try:
+        admin_work.delete_area(cache_dir(), key, confirm)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"deleted": key}
+
+
+# ---- admin: reference data; feedback ----
+
+class ReferenceIn(BaseModel):
+    geojson: str = Field(..., max_length=50_000_000)
+    batch: str = Field(..., min_length=1, max_length=200)
+    yearField: str = "demo_year"
+    nameField: str = "Name"
+
+
+@app.get("/api/admin/references")
+def admin_references(c: Caller = Depends(admin)):
+    return admin_work.references(c.user)
+
+
+@app.post("/api/admin/references")
+def admin_reference_import(body: ReferenceIn, c: Caller = Depends(admin)):
+    try:
+        n = validation.import_reference(c.user, body.geojson, body.batch.strip(), year_field=body.yearField,
+                                        name_field=body.nameField)
+    except (ValueError, KeyError) as e:
+        raise HTTPException(status_code=400, detail=str(e) or "That file could not be read.")
+    return {"imported": n}
+
+
+@app.delete("/api/admin/references/{batch}")
+def admin_reference_delete(batch: str, c: Caller = Depends(admin)):
+    validation.delete_reference_batch(c.user, batch)
+    return {"deleted": batch}
+
+
+class FeedbackIn(BaseModel):
+    kind: str = "other"
+    message: str = Field(..., min_length=1, max_length=4000)
+    context: str = Field("", max_length=2000)
+
+
+@app.post("/api/feedback")
+def send_feedback(body: FeedbackIn, c: Caller = Depends(caller)):
+    """Anyone signed in may write: a bug, an idea, a question. Read by the tool's admins."""
+    from ..app import feedback
+
+    try:
+        fid = feedback.send(c.user, body.kind if body.kind in feedback.KINDS else "other", body.message,
+                            email=c.email, context=body.context)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"id": fid}
+
+
+@app.get("/api/admin/feedback")
+def admin_feedback(all: bool = Query(False), c: Caller = Depends(admin)):
+    return admin_work.feedback_inbox(c.user, all)
+
+
+class DoneIn(BaseModel):
+    done: bool = True
+
+
+@app.post("/api/admin/feedback/{fid}")
+def admin_feedback_done(fid: int, body: DoneIn, c: Caller = Depends(admin)):
+    from ..app import feedback
+
+    feedback.mark_done(c.user, fid, body.done)
+    return {"id": fid, "done": body.done}
 
 
 # ---- users (the tool's admins) ----

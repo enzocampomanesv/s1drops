@@ -31,7 +31,12 @@ def _loop(cache_dir) -> None:
 
 
 def start(cache_dir) -> None:
-    """Start the scheduler once per server process."""
+    """Start the scheduler once per server process. S1DROPS_UPDATER=0 keeps it off:
+    only one process may bake (the Space4All API runs it; see deploy/compose.yaml)."""
+    import os
+
+    if os.environ.get("S1DROPS_UPDATER", "1") == "0":
+        return
     if not _started.is_set():
         _started.set()
         threading.Thread(target=_loop, args=(cache_dir,), daemon=True,

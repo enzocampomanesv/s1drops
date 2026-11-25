@@ -373,6 +373,46 @@ def report_pdf(a: Area, v: View, d: Detect, lat: float, lon: float, user, cache_
     return pdf, f"{slug}_report.pdf"
 
 
+AREA_DOWNLOADS = ("changes.csv", "changes.geojson", "map.geojson")
+PLACE_DOWNLOADS = ("signal.csv", "drops.csv")
+
+
+def area_download(a: Area, v: View, item: str, user, cache_dir) -> Tuple[str, str, str]:
+    """(content, file name, media type): every change found with these settings
+    (table or outlines), or every pixel of the drop map, as the old Download button."""
+    from ..app import downloads
+
+    found, _ = ranked(a, v)
+    _, track_drops, start, end = hotspot(a, v)
+    recs = records(a, user)
+    summaries = {c["rank"]: sm for c in found if (sm := validation.summarise(recs, c))} if recs else {}
+    kw = dict(min_change=v.min_change, track_drops=track_drops, summaries=summaries, show_verdicts=True,
+              cache_dir=cache_dir)
+    tag = f"{ex._slug(a.entry.name)}_{start}_{end}"
+    if item == "changes.csv":
+        return downloads.changes_csv(found, **kw), f"{tag}_changes.csv", "text/csv"
+    if item == "changes.geojson":
+        return downloads.changes_geojson(a.cube, found, **kw), f"{tag}_changes.geojson", "application/geo+json"
+    if item == "map.geojson":
+        return (logic.hotspot_geojson(a.cube, pol=v.pol, start=start, end=end, direction=v.orbit,
+                                      lcz_classes=list(v.lcz), min_value=v.min_change),
+                f"{tag}_map_min{v.min_change:g}dB_{v.pol}.geojson", "application/geo+json")
+    raise ValueError("Unknown download.")
+
+
+def place_download(a: Area, v: View, d: Detect, lat: float, lon: float, item: str, user, cache_dir) -> Tuple[str, str, str]:
+    """(content, file name, media type): the radar signal at a place, or its detected changes."""
+    p = place_at(a, v, d, lat, lon, user, cache_dir)
+    name = ex._slug(f"{a.entry.name}_{(p['place'] or 'site').split(',')[0]}")
+    if item == "signal.csv":
+        series = [r.series for r in p["results"]]
+        return (logic.series_csv(series, start=p["start"], end=p["end"], cell=p["idx"]),
+                f"{name}_signal_{p['start']}_{p['end']}.csv", "text/csv")
+    if item == "drops.csv":
+        return logic.drops_csv(p["results"], cell=p["idx"]), f"{name}_changes.csv", "text/csv"
+    raise ValueError("Unknown download.")
+
+
 def verdict_layer(a: Area, user) -> Dict:
     return ex._verdict_layer(records(a, user))
 

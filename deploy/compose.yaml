@@ -31,6 +31,10 @@ services:
       S1DROPS_LCZ_PATH: ${S1DROPS_LCZ_PATH:-}
       S1DROPS_NATIVE10_MAX_KM2: ${S1DROPS_NATIVE10_MAX_KM2:-10}
       S1DROPS_MAX_CUBE_BYTES: ${S1DROPS_MAX_CUBE_BYTES:-2000000000}
+      # Bakes and monthly updates run in the api service now (only one process
+      # may bake); the Admin tab here points to Space4All.
+      S1DROPS_BAKES: "0"
+      S1DROPS_UPDATER: "0"
       # Trust X-Forwarded-Proto from cloudflared (another container, so not
       # 127.0.0.1); without it Solara sees http and its session cookie breaks.
       # Safe because the port is only reachable from localhost and the tunnel.
@@ -72,6 +76,8 @@ services:
       S1DROPS_DB_PATH: /data/db/app.db
       S1DROPS_ADMIN_EMAILS: ${S1DROPS_ADMIN_EMAILS:-}
       S1DROPS_LCZ_PATH: ${S1DROPS_LCZ_PATH:-}
+      S1DROPS_NATIVE10_MAX_KM2: ${S1DROPS_NATIVE10_MAX_KM2:-10}
+      S1DROPS_MAX_CUBE_BYTES: ${S1DROPS_MAX_CUBE_BYTES:-2000000000}
       # Space4All's Firebase project: whose sign-ins the API accepts.
       S1DROPS_FIREBASE_PROJECT: ${S1DROPS_FIREBASE_PROJECT:-livability-mapping-prod}
       # Pages allowed to call it (CORS), comma-separated.
@@ -83,11 +89,11 @@ services:
       - ${S1DROPS_DATA_DIR:-/srv/s1drops}/lcz:/data/lcz:ro
     ports:
       - "127.0.0.1:8766:8766"
-    # Its own limit, so page requests can't starve a bake in the app (or the reverse).
-    # Working out an area's drop map peaks at about 4 GB for the largest (Nairobi,
-    # 728 passes at 100 m); 8 GB leaves room for a second at the same time. The VM
-    # has 24 GB: the app (6 GB) and this can both peak together.
-    mem_limit: ${S1DROPS_API_MEM_LIMIT:-8g}
+    # Page requests and, since phase 2, bakes: working out an area's drop map peaks
+    # at about 4 GB for the largest (Nairobi, 728 passes at 100 m), and a bake holds
+    # the whole cube in memory (up to S1DROPS_MAX_CUBE_BYTES, ~6 GB with its reads).
+    # The VM has 24 GB; the Solara app (6 GB cap, ~0.5 GB used) goes after the migration.
+    mem_limit: ${S1DROPS_API_MEM_LIMIT:-12g}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/api/health', timeout=5)"]
       interval: 30s
